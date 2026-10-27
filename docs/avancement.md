@@ -71,5 +71,16 @@
 - Captures : `docs/captures/M5.png` (flou 180°), `M5-rolling-shutter.png`, `M5-zoom.png`. Réglages : Full Frame 24×36, 50 mm (35 → 105 mm pour le zoom), f/16, map 6 m, exposition d'affichage 0,06 (HDR non écrêté), caméra à l'origine, plan de 1 s, pan 0 → 40° linéaire, tête de lecture à 0,5 s, 128 éch. ; M5-rolling-shutter : 180° + 20 ms.
 - Prochaine étape : M6 (optique et pellicule : vignettage, distorsion, aberration chromatique, bloom, halation, starbursts, streaks, ghosts, lens dirt, bruit ISO, grain, looks .cube) ; au passage, tone mapping (dette M2).
 
-## M6 à M8, M7bis
+## M6. Optique et pellicule
+- Statut : en cours (lot 1 sur 2 livré)
+- Date : 2026-10-27
+- Commit : voir `git log` (commit « M6 (partiel) : … »)
+- Lot 1 livré : tone mapping (ACES / Reinhard / aucun), exposition en EV, gain des hautes lumières, bloom (seuil doux, énergie conservée, étendue réglable), halation (halo rouge-orangé large), vignettage naturel cos⁴ et optique, distorsion radiale (barillet / coussinet), aberration chromatique latérale, bruit capteur lié à l'ISO (100 à 12800), grain de pellicule (taille réglable), looks LUT 3D `.cube`. Chaîne dans `src/render/post.ts` (pyramide de flou à 6 niveaux, composition plein cadre), maths testées dans `src/optics/lens-effects.ts` et `lut.ts` (79 tests Vitest verts). Un changement de réglage de post ré-affiche l'accumulateur sans refaire les sous-rendus. Bruit et grain déterministes (graine = numéro d'image).
+- Mesures (Chrome headless, `samples/bokeh-grid.ply`, Full Frame 50 mm, f/16, tone mapping aucun) : vignettage cos⁴ au coin 0,755 (attendu 0,754) ; distorsion + 0,1 : coin à NDC 0,914 (attendu 0,914) ; aberration chromatique : écart R−B au coin 8,76 px (attendu 8,76) ; ACES : pic 0,738 (attendu 0,739) ; EV −1 : pic ×0,501 ; bruit ISO 12800 : σ par canal 0,033 dans le plateau (attendu 0,034) et 0,0032 sur fond sombre (attendu 0,0031 après écrêtage à 0) ; même graine = images identiques (écart 0) ; LUT inversion : 112 → 142 (attendu 143), 198 → 57 (57).
+- Reste à faire (lot 2) : starbursts (étoiles de diaphragme), streaks anamorphiques, ghost flares, lens dirt, puis capture finale M6 et passage à « validé ». Prochaine étape précise : `src/render/post.ts`, ajouter une passe d'effets de flare sur la pyramide / un masque d'ouverture (FFT ou étoiles analytiques) avant la composition.
+- Approximatif : le grain n'est pas calibré sur une pellicule réelle (amplitude 0,35 × réglage, médiums) ; le bloom de seuil 1 ne réagit qu'aux valeurs > 1 après gain (splats rarement > 1) ; vignettage et distorsion utilisent le champ de l'image de base (pas de variation de zoom par sous-rendu) ; distorsion en coussinet : les bords lisent hors cadre (étirés, pas de zoom de compensation) ; LUT : seulement `.cube` 3D, domaine 0 à 1 ; le look s'applique après encodage sRGB (LUT display-referred) ; ancien « pas de tone mapping » (dette M2) soldé, le défaut est maintenant ACES (les captures M0 à M5 sont sans tone mapping).
+- Décisions non évidentes : voir `docs/gotchas.md` (Post-traitement).
+- Captures : `docs/captures/M6.png` (look complet), `M6-neutre.png` (même scène, tout à zéro). Réglages M6.png : Full Frame, 50 mm, f/1,4, map 1 m, 128 éch., ACES, gain ×3, bloom 0,6 (seuil 1, étendue 0,7), halation 0,9, vignettage naturel 1 + optique 0,3, distorsion 0,04, aberration chromatique 0,6, ISO 3200, grain 0,5 (2 px).
+
+## M7 à M8, M7bis
 - Statut : à faire

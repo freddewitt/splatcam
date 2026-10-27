@@ -1,6 +1,7 @@
 import * as pc from 'playcanvas';
 import { DEFAULT_SENSOR_ID, getSensor, rad2deg, sensorFov } from './optics/sensor';
 import { createPanel, type PanelState } from './ui/panel';
+import { DEFAULT_POST } from './render/post';
 import { DofRenderer } from './render/dof-renderer';
 import { pickDepth, type PickData } from './render/pick';
 import { DEFAULT_APERTURE } from './optics/aperture';
@@ -30,7 +31,7 @@ window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); })
 
 // État réglable depuis le panneau.
 const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
-  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, presetId: '' };
+  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, post: { ...DEFAULT_POST }, lutName: '', presetId: '' };
 
 // Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
 app.autoRender = false;
@@ -105,7 +106,11 @@ function applyCameras() {
 }
 
 const dof = new DofRenderer(app, shoot);
-const panel = createPanel(state, applyCameras);
+const panel = createPanel(state, applyCameras, {
+  post: () => dof.setPost(state.post),
+  lut: (lut) => dof.postProcessor.setLut(lut),
+});
+dof.postParams = state.post;
 applyCameras();
 
 // Timeline : pistes caméra (pose réelle de la caméra de tournage), map (dioptries) et zoom (ln focale).
@@ -309,7 +314,10 @@ window.addEventListener('drop', (e) => {
 let frames = 0, last = performance.now();
 app.on('update', (dt: number) => {
   // Lecture / enregistrement de la timeline : seulement en mode tournage (la caméra d'exploration est libre).
-  if (state.mode === 'shoot') timeline.tick(dt, performance.now());
+  if (state.mode === 'shoot') {
+    timeline.tick(dt, performance.now());
+    state.post.seed = Math.floor(timeline.time * state.fps + 1e-6); // même image = même bruit
+  }
   else if (timeline.playing) timeline.pause();
   if (state.mode === 'explore') app.renderNextFrame = true;
   else { dof.frame(dirty); dirty = false; }

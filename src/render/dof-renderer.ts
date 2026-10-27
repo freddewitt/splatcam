@@ -8,6 +8,7 @@
 // nombre d'échantillons, et non par la somme des poids, donne le vignettage mécanique du cat-eye.
 
 import * as pc from 'playcanvas';
+import { DEFAULT_POST, PostProcessor, type PostParams } from './post';
 import { apertureDiameter, apertureScale, shearTerm } from '../optics/dof';
 import { sampleTime, type ExposurePlan } from '../optics/camera-defects';
 import { isTilted, tiltGradient, tiltWarp, type Tilt } from '../optics/tilt';
@@ -129,29 +130,6 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
 }
 `;
 
-// Affichage : exposition puis encodage sRGB (le tone mapping / look viendra en M6).
-const PRESENT_WGSL = /* wgsl */ `
-var accumTex: texture_2d<f32>;
-var accumTexSampler: sampler;
-uniform exposure: f32;     // exposition × 1 / (nombre d'échantillons × acceptation au centre)
-varying uv0: vec2f;
-
-fn srgbOetf(c: vec3f) -> vec3f {
-  let lo = c * 12.92;
-  let hi = 1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055;
-  return select(hi, lo, c <= vec3f(0.0031308));
-}
-
-@fragment
-fn fragmentMain(input: FragmentInput) -> FragmentOutput {
-  var output: FragmentOutput;
-  let p = vec2i(input.uv0 * vec2f(textureDimensions(accumTex)));
-  let c = max(textureLoad(accumTex, p, 0).rgb * uniform.exposure, vec3f(0.0));
-  output.color = vec4f(srgbOetf(min(c, vec3f(1.0))), 1.0);
-  return output;
-}
-`;
-
 export class DofRenderer {
   /** Échantillons par image en mouvement (aperçu). */
   previewSamples = 4;
@@ -165,7 +143,10 @@ export class DofRenderer {
 
   private readonly device: pc.GraphicsDevice;
   private readonly accumShader: pc.Shader;
-  private readonly presentShader: pc.Shader;
+  private readonly post: PostProcessor;
+  /** Paramètres de la chaîne optique / pellicule (voir post.ts). */
+  postParams: PostParams = { ...DEFAULT_POST };
+  private repost = false;
   private sceneRT: pc.RenderTarget | null = null;
   private accum: { tex: pc.Texture; rt: pc.RenderTarget }[] = [];
   private cur = 0;
@@ -184,6 +165,7 @@ export class DofRenderer {
   private readonly screenRect = new pc.Vec4();
   private inSubRender = false;
   private presentNow = false;
+  private presentOnly = false;
   /** Instant du sous-rendu courant et plan d'exposition (lus par l'accumulation). */
   private rs = { u: 0, readout: 0, window: 0, on: false };
   /** Fraction des sous-rendus acceptée par ligne (rolling shutter) : normalise l'exposition. */
@@ -198,7 +180,7 @@ export class DofRenderer {
       fragmentWGSL,
     });
     this.accumShader = mk('SplatCamAccum', ACCUM_WGSL);
-    this.presentShader = mk('SplatCamPresent', PRESENT_WGSL);
+    this.post = new PostProcessor(this.device);
     app.on('postrender', () => this.onPostRender());
   }
 
@@ -223,6 +205,11 @@ export class DofRenderer {
       this.count = 0;
     }
   }
+
+  /** Remplace les paramètres de post : ré-affiche l'accumulateur sans refaire les sous-rendus. */
+  setPost(p: PostParams): void { this.postParams = p; this.repost = true; }
+
+  get postProcessor(): PostProcessor { return this.post; }
 
   get currentLens(): LensParams | null { return this.lens; }
 
@@ -277,7 +264,17 @@ export class DofRenderer {
     if (dirty) this.count = 0;
 
     const budget = dirty ? this.previewSamples : Math.min(this.stepSamples, this.targetSamples - this.count);
-    if (budget <= 0) return; // image terminée : l'écran garde la dernière image présentée
+    if (budget <= 0) {
+      // Image terminée : l'écran garde la dernière image présentée ; seul un changement de post la redessine.
+      if (this.repost && this.count > 0) {
+        this.inSubRender = true; this.presentNow = true; this.presentOnly = true;
+        this.app.render();
+        this.inSubRender = false; this.presentOnly = false;
+      }
+      this.repost = false;
+      return;
+    }
+    this.repost = false;
 
     const cam = this.camera, cc = cam.camera!;
     const basePos = cam.getPosition().clone();
@@ -336,23 +333,28 @@ export class DofRenderer {
   private onPostRender(): void {
     if (!this.inSubRender || !this.sceneRT) return;
     const { scope } = this.device;
-    const prev = this.accum[this.cur], next = this.accum[1 - this.cur];
-    scope.resolve('sceneTex').setValue(this.sceneRT.colorBuffer);
-    scope.resolve('prevTex').setValue(prev.tex);
-    const ap = this.lens!.aperture;
-    scope.resolve('uSample').setValue(this.cur_u);
-    scope.resolve('uShape').setValue([ap.blades, ap.roundness, (ap.rotationDeg * Math.PI) / 180, ap.catEye]);
-    scope.resolve('uField').setValue([(ap.swirlDeg * Math.PI) / 180, this.lens!.aspect, this.count === 0 ? 1 : 0, this.warp.on ? 1 : 0]);
-    scope.resolve('uRS').setValue([this.rs.u, this.rs.readout, this.rs.window, this.rs.on ? 1 : 0]);
-    scope.resolve('uWarp').setValue(this.warp.m);
-    scope.resolve('uProj').setValue(this.warp.proj);
-    pc.drawQuadWithShader(this.device, next.rt, this.accumShader);
-    this.cur = 1 - this.cur;
-    this.count++;
+    if (!this.presentOnly) {
+      const prev = this.accum[this.cur], next = this.accum[1 - this.cur];
+      scope.resolve('sceneTex').setValue(this.sceneRT.colorBuffer);
+      scope.resolve('prevTex').setValue(prev.tex);
+      const ap = this.lens!.aperture;
+      scope.resolve('uSample').setValue(this.cur_u);
+      scope.resolve('uShape').setValue([ap.blades, ap.roundness, (ap.rotationDeg * Math.PI) / 180, ap.catEye]);
+      scope.resolve('uField').setValue([(ap.swirlDeg * Math.PI) / 180, this.lens!.aspect, this.count === 0 ? 1 : 0, this.warp.on ? 1 : 0]);
+      scope.resolve('uRS').setValue([this.rs.u, this.rs.readout, this.rs.window, this.rs.on ? 1 : 0]);
+      scope.resolve('uWarp').setValue(this.warp.m);
+      scope.resolve('uProj').setValue(this.warp.proj);
+      pc.drawQuadWithShader(this.device, next.rt, this.accumShader);
+      this.cur = 1 - this.cur;
+      this.count++;
+    }
     if (this.presentNow) {
-      scope.resolve('accumTex').setValue(this.accum[this.cur].tex);
-      scope.resolve('exposure').setValue(this.exposure / (this.count * this.centerAcceptance * this.rsAcceptance));
-      pc.drawQuadWithShader(this.device, null, this.presentShader, this.screenRect);
+      const lens = this.lens!;
+      this.post.run(
+        this.accum[this.cur].tex, this.w, this.h,
+        this.exposure / (this.count * this.centerAcceptance * this.rsAcceptance),
+        lens.aspect, Math.tan((lens.fovV * Math.PI) / 360), this.postParams, this.screenRect,
+      );
     }
   }
 }

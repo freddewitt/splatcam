@@ -1,6 +1,8 @@
 import { rad2deg, SENSOR_FORMATS, type Fov } from '../optics/sensor';
 import type { ApertureShape } from '../optics/aperture';
 import { FOCUS_MARKS, FOCUS_MIN_M, dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } from '../timeline/shot';
+import { parseCube, type Lut3D } from '../optics/lut';
+import type { PostParams, ToneMap } from '../render/post';
 import { LENS_PRESETS, getPreset, presetAperture } from '../optics/lens-preset';
 
 export type Mode = 'explore' | 'shoot';
@@ -29,6 +31,10 @@ export interface PanelState {
   shutterAngle: number;
   readoutMs: number;
   weave: number;
+  /** Optique et pellicule (voir render/post.ts). */
+  post: PostParams;
+  /** Nom du look (.cube) chargé, '' = aucun. */
+  lutName: string;
   /** Preset d'objectif appliqué en dernier ('' = réglage manuel). */
   presetId: string;
 }
@@ -48,7 +54,10 @@ const el = <T extends HTMLElement>(tag: string, attrs: Record<string, string> = 
 };
 
 /** Panneau de contrôle HTML : mode, capteur, focale, échelle, lecture du champ de vision. */
-export function createPanel(state: PanelState, onChange: () => void): Panel {
+/** Rappels de l'interface vers le rendu : paramètres de post modifiés (sans refaire les sous-rendus), look chargé. */
+export interface PanelHooks { post(): void; lut(lut: Lut3D | null): void }
+
+export function createPanel(state: PanelState, onChange: () => void, hooks: PanelHooks): Panel {
   const root = document.getElementById('panel')!;
 
   const modeBtns = (['explore', 'shoot'] as const).map((m) => {
@@ -136,7 +145,7 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
   });
 
   /** Curseur + valeur affichée ; toute modification manuelle quitte le preset. */
-  const slider = (label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void, fmt = (v: number) => String(+v.toFixed(2)), keepPreset = false) => {
+  const slider = (label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void, fmt = (v: number) => String(+v.toFixed(2)), keepPreset = false, notify: () => void = onChange) => {
     const range = el<HTMLInputElement>('input', { type: 'range', min: String(min), max: String(max), step: String(step) });
     const val = el('b', { class: 'val' });
     const upd = () => { range.value = String(get()); val.textContent = fmt(get()); };
@@ -144,7 +153,7 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
       set(parseFloat(range.value));
       if (!keepPreset) { state.presetId = ''; preset.value = ''; }
       upd();
-      onChange();
+      notify();
     });
     syncers.push(upd);
     const head = el('span');
@@ -185,6 +194,55 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     slider('Gate weave', 0, 3, 0.05, () => state.weave, (v) => { state.weave = v; },
       (v) => (v === 0 ? 'aucun' : `×${v.toFixed(2)}`), true),
   ];
+  // Optique et pellicule : ne touche pas aux sous-rendus (ré-affichage de l'accumulateur seulement).
+  const pp = <K extends keyof PostParams>(k: K) => ({ get: () => state.post[k] as number, set: (v: number) => { state.post = { ...state.post, [k]: v }; } });
+  const post = (label: string, k: keyof PostParams, min: number, max: number, step: number, fmt?: (v: number) => string) =>
+    slider(label, min, max, step, pp(k).get, pp(k).set, fmt, true, hooks.post);
+  const field2 = (label: string, input: HTMLElement) => { const r = el('label', { class: 'field' }); r.append(el('span', {}, label), input); return r; };
+  const toneSel = el<HTMLSelectElement>('select');
+  for (const [v, l] of [['aces', 'ACES (cinéma)'], ['reinhard', 'Reinhard'], ['none', 'Aucun (écrêté)']] as const) toneSel.append(el<HTMLOptionElement>('option', { value: v }, l));
+  toneSel.addEventListener('change', () => { state.post = { ...state.post, toneMap: toneSel.value as ToneMap }; hooks.post(); });
+  const isoSel = el<HTMLSelectElement>('select');
+  for (const v of [0, 100, 200, 400, 800, 1600, 3200, 6400, 12800]) isoSel.append(el<HTMLOptionElement>('option', { value: String(v) }, v === 0 ? 'Aucun bruit' : `ISO ${v}`));
+  isoSel.addEventListener('change', () => { state.post = { ...state.post, iso: parseInt(isoSel.value, 10) }; hooks.post(); });
+  const lutName = el('span', { class: 'val' });
+  const lutFile = el<HTMLInputElement>('input', { type: 'file', accept: '.cube' });
+  lutFile.addEventListener('change', async () => {
+    const f = lutFile.files?.[0];
+    if (!f) return;
+    try {
+      hooks.lut(parseCube(await f.text()));
+      state.lutName = f.name;
+    } catch (e) {
+      hooks.lut(null);
+      state.lutName = '';
+      lutName.textContent = `erreur : ${(e as Error).message}`;
+      return;
+    }
+    sync();
+    hooks.post();
+  });
+  const lutClear = el<HTMLButtonElement>('button', { type: 'button' }, 'Retirer le look');
+  lutClear.addEventListener('click', () => { hooks.lut(null); state.lutName = ''; lutFile.value = ''; sync(); hooks.post(); });
+  const film = [
+    field2('Tone mapping', toneSel),
+    post('Exposition (EV)', 'exposureEv', -4, 4, 0.1),
+    post('Gain hautes lumières', 'highlightGain', 1, 8, 0.1, (v) => `×${v.toFixed(1)}`),
+    post('Bloom', 'bloom', 0, 1, 0.01),
+    post('Bloom : seuil', 'bloomThreshold', 0.2, 4, 0.05),
+    post('Bloom : étendue', 'bloomRadius', 0.3, 0.8, 0.01),
+    post('Halation', 'halation', 0, 1, 0.01),
+    post('Vignettage naturel (cos⁴)', 'vignetteNatural', 0, 1, 0.01),
+    post('Vignettage optique', 'vignetteOptical', 0, 1, 0.01),
+    post('Distorsion (+ barillet, − coussinet)', 'distortion', -0.3, 0.3, 0.005),
+    post('Aberration chromatique', 'chromaticAberration', 0, 1, 0.01),
+    field2('Bruit capteur', isoSel),
+    post('Grain', 'grain', 0, 1, 0.01),
+    post('Taille du grain (px)', 'grainSize', 0.8, 4, 0.1),
+  ];
+  const lutRow = el('div', { class: 'field' });
+  lutRow.append(el('span', {}, 'Look (.cube)'), lutName, lutFile, lutClear);
+  const lutAmount = post('Intensité du look', 'lutAmount', 0, 1, 0.01);
   const title = (t: string) => el('div', { class: 'sep' }, t);
 
   const readout = el('div', { class: 'readout' });
@@ -215,6 +273,10 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     title('Obturateur et défauts'),
     field('Cadence', fpsSel),
     ...shutter,
+    title('Optique et pellicule'),
+    ...film,
+    lutRow,
+    lutAmount,
     readout,
   );
 
@@ -228,6 +290,9 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     focus.value = String(+state.focusM.toFixed(3));
     samples.value = String(state.samples);
     fpsSel.value = String(state.fps);
+    toneSel.value = state.post.toneMap;
+    isoSel.value = String(state.post.iso);
+    lutName.textContent = state.lutName || 'aucun';
     ring.value = String(dioptersFromMeters(state.focusM));
     ringVal.textContent = state.focusM >= 500 ? '∞' : `${state.focusM.toFixed(2)} m`;
     zoomLog.value = String(zoomFromFocal(Math.min(Math.max(state.focal, 4), 300)));

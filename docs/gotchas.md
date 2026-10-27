@@ -32,5 +32,13 @@
 - Ne jamais mettre de backtick dans un shader WGSL écrit en template literal JS (erreur de syntaxe TS qui pointe ailleurs).
 - Mesurer un flou : exposition d'affichage basse (`dof.exposure = 0.06`) pour ne pas écrêter, linéariser le PNG (sRGB inverse), écart-type pondéré → L = √(12 (σ² − σ0²)) ; ne mesurer que les rangées centrales d'une grille à profondeur constante.
 
+## Post-traitement
+- Passes plein écran sur RGBA16F filtrable (pyramide) ; l'accumulateur RGBA32F n'est lu qu'en `textureLoad` (pas de filtre bilinéaire sur 32F). Un changement de post ne redessine que la composition (`dof.setPost` → `repost`), pas les sous-rendus.
+- Bloom = pyramide « dual filter » : U_k = (1 − m)·D_k + m·flou(U_{k+1}), poids qui somment à 1 (énergie conservée) ; seuil doux uniquement au premier niveau. Halation = niveau U4 (large) teinté, ajouté avant la distorsion comme le bloom.
+- Distorsion : la sortie au rayon r lit la source à r·(1 + k1·r²)/fit, coin = 1 (aspect inclus) ; fit = max(1, 1 + k1) garde le coin de la source en barillet.
+- Bruit : graine = numéro d'image (`state.post.seed = floor(t·fps)`) → déterministe. Écart-type du bruit mesuré avec écrêtage à 0 dans les noirs (la moyenne remonte, c'est attendu).
+- LUT : bande RGBA32F `atlasWidth(N)` × N² lue en `textureLoad` avec interpolation trilinéaire maison ; appliquée après sRGB. Attention en test : les réglages de post PERSISTENT entre deux captures (`reset=false`) : un « gain ×4 » resté actif fausse la mesure d'une LUT.
+- Mesurer une zone de fond : choisir une fenêtre sans point lumineux (les grilles de test ont un point tous les ~170 px).
+
 ## Export
 (vide)
