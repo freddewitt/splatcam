@@ -6,6 +6,9 @@
 - Rendu linéaire HDR : caméra `gammaCorrection: GAMMA_NONE` + `toneMapping: TONEMAP_LINEAR` ; le shader gsplat décode alors les couleurs gamma en linéaire (`prepareOutputFromGamma`). Cible RGBA16F pour le sous-rendu, RGBA32F ping-pong pour l'accumulation (moyenne en 1/(k+1)).
 - Shaders WGSL maison : `ShaderUtils.createShader(device, { vertexChunk: 'quadVS', fragmentWGSL })`, syntaxe PlayCanvas (`var tex: texture_2d<f32>; var texSampler: sampler; uniform x: f32; varying uv0: vec2f; fn fragmentMain(input: FragmentInput) -> FragmentOutput`, sortie `output.color`). `textureLoad` fonctionne sur RGBA32F.
 - Le tri des splats se fait une fois par image, pas par `render()` : sans conséquence pour des décalages d'ouverture de quelques cm.
+- Dans les passes plein écran maison, `uv0.y` croît vers le BAS de l'image (ligne 0 = haut) : pour une position de champ « haut = +y » (cat-eye, swirl), inverser y.
+- Masque d'ouverture par pixel (cat-eye, swirl, lames) : l'accumulateur SOMME les échantillons acceptés, l'affichage divise par le nombre d'échantillons × l'acceptation au centre (les lames ne doivent pas assombrir, le cat-eye doit vignetter). Le miroir CPU `apertureMask` (optics/aperture.ts) et le WGSL doivent rester alignés.
+- Shift d'objectif = `projectionOffset` additionné au cisaillement d'ouverture (ndc = p·x/(−z) − P02) ; le picking doit ajouter ce décalage au rayon (x/(−z) = (ndc + P02)/p).
 - Picking : seules les données PLY brutes (`resource.gsplatData.getProp`) donnent opacité et échelle ; SOG / SPZ / compressé → centres seuls.
 
 ## Optique

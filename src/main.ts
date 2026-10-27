@@ -3,6 +3,7 @@ import { DEFAULT_SENSOR_ID, getSensor, rad2deg, sensorFov } from './optics/senso
 import { createPanel, type PanelState } from './ui/panel';
 import { DofRenderer } from './render/dof-renderer';
 import { pickDepth, type PickData } from './render/pick';
+import { DEFAULT_APERTURE } from './optics/aperture';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -22,7 +23,8 @@ app.setCanvasResolution(pc.RESOLUTION_AUTO);
 window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); });
 
 // État réglable depuis le panneau.
-const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64 };
+const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
+  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, presetId: '' };
 
 // Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
 app.autoRender = false;
@@ -79,6 +81,9 @@ function applyCameras() {
     dof.setLens({
       fovV: rad2deg(fov.v), aspect: sensor.width / sensor.height, focalMm: state.focal,
       fNumber: state.fNumber, focusM: state.focusM, metersPerUnit: state.metersPerUnit,
+      aperture: state.aperture,
+      // Shift : 2 · mm / taille du capteur = décalage du cadre en NDC (P02 / P12 = +2s/W : le cadre monte avec le shift).
+      shiftNdc: { x: (2 * state.shiftX) / sensor.width, y: (2 * state.shiftY) / sensor.height },
     });
   } else {
     dof.detach();
@@ -160,7 +165,8 @@ function focusAt(clientX: number, clientY: number) {
   const ny = 1 - (((clientY * k - (device.height - r.y - r.h)) / r.h) * 2);
   if (Math.abs(nx) > 1 || Math.abs(ny) > 1) return; // clic dans les bandes noires
   const p11 = 1 / Math.tan((lens.fovV * Math.PI) / 360), p00 = p11 / lens.aspect;
-  const local = new pc.Vec3(nx / p00, ny / p11, -1).normalize();
+  // ndc = p·x/(−z) − P02 (shift compris) ⇒ x/(−z) = (ndc + P02) / p.
+  const local = new pc.Vec3((nx + lens.shiftNdc.x) / p00, (ny + lens.shiftNdc.y) / p11, -1).normalize();
   const dir = shoot.getRotation().transformVector(local);
   const fwd = shoot.forward, pos = shoot.getPosition();
   const tolAngle = (3 * 2) / (r.h * p11); // ≈ 3 px d'angle

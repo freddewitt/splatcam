@@ -8,7 +8,9 @@
     html, body { margin: 0; height: 100%; background: #111; overflow: hidden; font: 13px ui-monospace, Menlo, monospace; color: #ddd; }
     canvas { display: block; width: 100%; height: 100%; touch-action: none; }
     #hud { position: fixed; top: 8px; left: 8px; padding: 4px 8px; background: #0008; border-radius: 4px; pointer-events: none; }
-    #panel { position: fixed; top: 8px; right: 8px; width: 260px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 10px; background: #000b; border-radius: 6px; display: grid; gap: 8px; }
+    #panel { position: fixed; top: 8px; right: 8px; width: 260px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 10px; background: #000b; border-radius: 6px; display: grid; gap: 8px; max-height: calc(100vh - 16px); overflow-y: auto; }
+    #panel .sep { color: #79c; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-top: 4px; border-top: 1px solid #333; padding-top: 8px; }
+    #panel .val { color: #ddd; font-weight: normal; }
     #panel .row { display: flex; gap: 6px; }
     #panel button { flex: 1; padding: 8px; min-height: 36px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
     #panel button.on { background: #357; border-color: #79c; color: #fff; }

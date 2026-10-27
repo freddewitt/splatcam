@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { apertureDiameter, apertureScale, cocDiameter, dofLimits, hyperfocal, ndcWithShear } from './dof';
-import { diskSample, halton } from './sampling';
+import { halton } from './sampling';
 
 describe('lentille mince', () => {
   it('ouverture : 50 mm à f/2 = 25 mm', () => {
@@ -64,31 +64,8 @@ describe('cisaillement : la caméra décalée garde le plan de netteté fixe', (
   });
 });
 
-describe('Halton / disque', () => {
+describe('Halton', () => {
   it('halton base 2 : 1/2, 1/4, 3/4, 1/8', () => {
     expect([1, 2, 3, 4].map((i) => halton(i, 2))).toEqual([0.5, 0.25, 0.75, 0.125]);
-  });
-
-  it('tous les échantillons sont dans le disque unité, moyenne ≈ 0', () => {
-    let sx = 0, sy = 0;
-    const n = 256;
-    for (let i = 0; i < n; i++) {
-      const [x, y] = diskSample(i);
-      expect(Math.hypot(x, y)).toBeLessThanOrEqual(1);
-      sx += x; sy += y;
-    }
-    expect(Math.abs(sx / n)).toBeLessThan(0.03);
-    expect(Math.abs(sy / n)).toBeLessThan(0.03);
-  });
-
-  it('répartition uniforme en aire : ≈ 25 % des points dans r < 0,5', () => {
-    const n = 1024;
-    let inside = 0;
-    for (let i = 0; i < n; i++) { const [x, y] = diskSample(i); if (Math.hypot(x, y) < 0.5) inside++; }
-    expect(inside / n).toBeCloseTo(0.25, 1);
-  });
-
-  it('déterministe', () => {
-    expect(diskSample(17)).toEqual(diskSample(17));
   });
 });

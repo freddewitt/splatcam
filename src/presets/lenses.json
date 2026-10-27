@@ -1,0 +1,20 @@
+[
+  { "id": "neutre", "name": "Neutre (disque parfait)", "focalMm": 50, "fNumber": 2.8,
+    "aperture": {} },
+  { "id": "doux", "name": "Sphérique doux (bords fondus)", "focalMm": 50, "fNumber": 1.4,
+    "aperture": { "sphericalAberration": -0.7 } },
+  { "id": "onion", "name": "Onion rings (asphérique)", "focalMm": 50, "fNumber": 1.4,
+    "aperture": { "sphericalAberration": 0.6, "rings": 0.4, "ringCount": 14 } },
+  { "id": "hexa", "name": "6 lames", "focalMm": 35, "fNumber": 2,
+    "aperture": { "blades": 6, "roundness": 0.1 } },
+  { "id": "penta", "name": "5 lames arrondies", "focalMm": 50, "fNumber": 2,
+    "aperture": { "blades": 5, "roundness": 0.55, "rotationDeg": 12 } },
+  { "id": "cat-eye", "name": "Cat-eye grande ouverture", "focalMm": 50, "fNumber": 1.4,
+    "aperture": { "catEye": 0.9, "sphericalAberration": 0.2 } },
+  { "id": "vintage-swirl", "name": "Vintage swirl", "focalMm": 58, "fNumber": 2,
+    "aperture": { "catEye": 0.75, "swirlDeg": 40, "sphericalAberration": 0.3, "blades": 12, "roundness": 0.8 } },
+  { "id": "anamorphique", "name": "Anamorphique 2x", "focalMm": 40, "fNumber": 2.8,
+    "aperture": { "squeeze": 2, "sphericalAberration": -0.2, "catEye": 0.3 } },
+  { "id": "shift", "name": "Shift architecture (24 mm, +10 mm)", "focalMm": 24, "fNumber": 8,
+    "shiftMm": { "x": 0, "y": 10 }, "aperture": {} }
+]

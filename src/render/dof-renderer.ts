@@ -1,13 +1,15 @@
 // Profondeur de champ par accumulation multi-échantillons (HDR linéaire).
 //
 // Chaque sous-rendu : la caméra de tournage est décalée dans le plan de l'objectif (échantillon
-// d'ouverture, Halton) et sa projection est cisaillée (voir optics/dof.ts) pour que le plan de
-// netteté reste fixe. Le résultat linéaire (RGBA16F) est moyenné dans un accumulateur RGBA32F
-// (ping-pong : accum' = mix(accum, sous-rendu, 1/(k+1))), puis affiché avec l'encodage sRGB.
+// d'ouverture, Halton, voir optics/aperture.ts) et sa projection est cisaillée (voir optics/dof.ts)
+// pour que le plan de netteté reste fixe. Le résultat linéaire (RGBA16F) est SOMMÉ dans un
+// accumulateur RGBA32F (ping-pong) avec un poids par pixel (masque d'ouverture : cat-eye, swirl,
+// lames), puis divisé par le nombre d'échantillons à l'affichage (encodage sRGB). Diviser par le
+// nombre d'échantillons, et non par la somme des poids, donne le vignettage mécanique du cat-eye.
 
 import * as pc from 'playcanvas';
 import { apertureDiameter, apertureScale, shearTerm } from '../optics/dof';
-import { diskSample } from '../optics/sampling';
+import { ApertureSampler, DEFAULT_APERTURE, apertureMask, type ApertureShape } from '../optics/aperture';
 
 export interface LensParams {
   /** Champ vertical, degrés. */
@@ -20,22 +22,66 @@ export interface LensParams {
   focusM: number;
   /** Mètres par unité de scène. */
   metersPerUnit: number;
+  /** Forme d'ouverture (bokeh). */
+  aperture: ApertureShape;
+  /** Shift de l'objectif en NDC (2 · décalage_mm / taille_capteur_mm) : > 0 = cadre vers la droite / le haut. */
+  shiftNdc: { x: number; y: number };
 }
 
-// Passe d'accumulation : moyenne glissante, un échantillon à la fois.
+// Passe d'accumulation : somme pondérée, un échantillon à la fois.
+// La partie « masque » est le miroir de `apertureMask` (src/optics/aperture.ts, testé) : garder les deux alignés.
 const ACCUM_WGSL = /* wgsl */ `
 var sceneTex: texture_2d<f32>;
 var sceneTexSampler: sampler;
 var prevTex: texture_2d<f32>;
 var prevTexSampler: sampler;
-uniform weight: f32;   // 1 / (k + 1) : poids du nouvel échantillon
+uniform uSample: vec2f;   // décalage normalisé u dans le disque unité (avant squeeze)
+uniform uShape: vec4f;    // lames, arrondi, rotation (rad), cat-eye
+uniform uField: vec4f;    // swirl (rad), rapport du cadre, 1 = premier échantillon (ignore prevTex)
 varying uv0: vec2f;
+
+const PI: f32 = 3.14159265;
+
+// Frontière d'un polygone régulier (circonrayon 1, sommet en haut), arrondie par 'roundness'.
+fn bladeBoundary(angle: f32, n: f32, roundness: f32) -> f32 {
+  let wedge = 2.0 * PI / n;
+  let x = angle - PI * 0.5;
+  let a = ((x % wedge) + wedge * 1.5) % wedge - wedge * 0.5;
+  let flat = cos(PI / n) / cos(wedge * 0.5 - abs(a));
+  return flat + (1.0 - flat) * roundness;
+}
+
+// 1 si le décalage u passe l'ouverture effective au point du champ f (|f| = 1 dans un coin).
+fn apertureWeight(u: vec2f, f: vec2f) -> f32 {
+  let rho = min(1.0, length(f));
+  let phi = uniform.uField.x * rho * rho;                       // swirl : repère tourné de φ(ρ)
+  let c = cos(phi); let s = sin(phi);
+  let w = vec2f(c * u.x + s * u.y, -s * u.x + c * u.y);
+  let blades = uniform.uShape.x;
+  if (blades >= 3.0) {
+    if (length(w) > bladeBoundary(atan2(w.y, w.x) - uniform.uShape.z, blades, uniform.uShape.y)) { return 0.0; }
+  } else if (length(w) > 1.0) { return 0.0; }
+  if (uniform.uShape.w > 0.0 && rho > 1e-6) {                   // cat-eye : citron, axe court le long du champ
+    let d = 1.6 * uniform.uShape.w * rho * rho;
+    let fh = f / rho;
+    let along = dot(w, fh);
+    let across = -w.x * fh.y + w.y * fh.x;
+    if (length(vec2f(along - d * 0.5, across)) > 1.0 || length(vec2f(along + d * 0.5, across)) > 1.0) { return 0.0; }
+  }
+  return 1.0;
+}
 
 @fragment
 fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   var output: FragmentOutput;
   let p = vec2i(input.uv0 * vec2f(textureDimensions(sceneTex)));
-  output.color = mix(textureLoad(prevTex, p, 0), textureLoad(sceneTex, p, 0), uniform.weight);
+  let aspect = uniform.uField.y;
+  // uv0.y croît vers le BAS de l'image (ligne 0 = haut) alors que u.y est « haut caméra » : on inverse y.
+  let f = (input.uv0 * 2.0 - 1.0) * vec2f(aspect, -1.0) / sqrt(aspect * aspect + 1.0);
+  let w = apertureWeight(uniform.uSample, f);
+  let prev = select(textureLoad(prevTex, p, 0), vec4f(0.0), uniform.uField.z > 0.5);
+  let scene = select(vec4f(0.0), vec4f(textureLoad(sceneTex, p, 0).rgb, 1.0), w > 0.5);
+  output.color = prev + scene;
   return output;
 }
 `;
@@ -44,7 +90,7 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
 const PRESENT_WGSL = /* wgsl */ `
 var accumTex: texture_2d<f32>;
 var accumTexSampler: sampler;
-uniform exposure: f32;
+uniform exposure: f32;     // exposition × 1 / (nombre d'échantillons × acceptation au centre)
 varying uv0: vec2f;
 
 fn srgbOetf(c: vec3f) -> vec3f {
@@ -82,6 +128,12 @@ export class DofRenderer {
   private w = 0;
   private h = 0;
   private lens: LensParams | null = null;
+  private sampler = new ApertureSampler(DEFAULT_APERTURE);
+  private samplerKey = JSON.stringify(DEFAULT_APERTURE);
+  /** Fraction des échantillons acceptés au centre du champ (lames) : normalise l'exposition. */
+  private centerAcceptance = 1;
+  /** Échantillon courant (masque lu par l'accumulation). */
+  private cur_u: [number, number] = [0, 0];
   private readonly screenRect = new pc.Vec4();
   private inSubRender = false;
   private presentNow = false;
@@ -105,7 +157,21 @@ export class DofRenderer {
   /** Invalide l'accumulation (caméra, objectif ou scène modifiés). */
   reset(): void { this.count = 0; }
 
-  setLens(lens: LensParams): void { this.lens = lens; }
+  setLens(lens: LensParams): void {
+    this.lens = lens;
+    const key = JSON.stringify(lens.aperture);
+    if (key !== this.samplerKey) {
+      this.samplerKey = key;
+      this.sampler = new ApertureSampler(lens.aperture);
+      // Acceptation au centre : les lames éliminent des échantillons même sans vignettage ;
+      // l'ouverture f/N est définie à surface équivalente, donc on renormalise.
+      const n = 4096;
+      let ok = 0;
+      for (let i = 0; i < n; i++) if (apertureMask(this.sampler.sample(i), [0, 0], lens.aperture)) ok++;
+      this.centerAcceptance = ok / n;
+      this.count = 0;
+    }
+  }
 
   get currentLens(): LensParams | null { return this.lens; }
 
@@ -176,11 +242,17 @@ export class DofRenderer {
 
     this.inSubRender = true;
     for (let i = 0; i < budget; i++) {
-      const [sx, sy] = diskSample(this.count);
-      const ox = sx * radiusU, oy = sy * radiusU;
+      // Échantillon d'ouverture : décalage de caméra (squeeze appliqué) et décalage normalisé pour le masque.
+      this.cur_u = this.sampler.sample(this.count);
+      const [dx, dy] = this.sampler.offset(this.count);
+      const ox = dx * radiusU, oy = dy * radiusU;
       cam.setPosition(base.clone().add(right.clone().mulScalar(ox)).add(up.clone().mulScalar(oy)));
-      // Cisaillement : PlayCanvas écrit projectionOffset dans P02 / P12 de la matrice de projection.
-      cc.projectionOffset = new pc.Vec2(shearTerm(ox, p00, focusU), shearTerm(oy, p11, focusU));
+      // Cisaillement : PlayCanvas écrit projectionOffset dans P02 / P12 de la matrice de projection
+      // (ndc = p·x/(−z) − P02). Le shift de l'objectif s'ajoute : cadre déplacé sans bouger le plan de netteté.
+      cc.projectionOffset = new pc.Vec2(
+        shearTerm(ox, p00, focusU) + lens.shiftNdc.x,
+        shearTerm(oy, p11, focusU) + lens.shiftNdc.y,
+      );
       this.presentNow = i === budget - 1;
       this.app.render();
     }
@@ -196,13 +268,16 @@ export class DofRenderer {
     const prev = this.accum[this.cur], next = this.accum[1 - this.cur];
     scope.resolve('sceneTex').setValue(this.sceneRT.colorBuffer);
     scope.resolve('prevTex').setValue(prev.tex);
-    scope.resolve('weight').setValue(1 / (this.count + 1));
+    const ap = this.lens!.aperture;
+    scope.resolve('uSample').setValue(this.cur_u);
+    scope.resolve('uShape').setValue([ap.blades, ap.roundness, (ap.rotationDeg * Math.PI) / 180, ap.catEye]);
+    scope.resolve('uField').setValue([(ap.swirlDeg * Math.PI) / 180, this.lens!.aspect, this.count === 0 ? 1 : 0, 0]);
     pc.drawQuadWithShader(this.device, next.rt, this.accumShader);
     this.cur = 1 - this.cur;
     this.count++;
     if (this.presentNow) {
       scope.resolve('accumTex').setValue(this.accum[this.cur].tex);
-      scope.resolve('exposure').setValue(this.exposure);
+      scope.resolve('exposure').setValue(this.exposure / (this.count * this.centerAcceptance));
       pc.drawQuadWithShader(this.device, null, this.presentShader, this.screenRect);
     }
   }

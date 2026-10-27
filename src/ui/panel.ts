@@ -1,4 +1,6 @@
 import { rad2deg, SENSOR_FORMATS, type Fov } from '../optics/sensor';
+import type { ApertureShape } from '../optics/aperture';
+import { LENS_PRESETS, getPreset, presetAperture } from '../optics/lens-preset';
 
 export type Mode = 'explore' | 'shoot';
 
@@ -13,6 +15,13 @@ export interface PanelState {
   focusM: number;
   /** Échantillons visés à l'arrêt. */
   samples: number;
+  /** Forme d'ouverture (bokeh). */
+  aperture: ApertureShape;
+  /** Shift de l'objectif sur le capteur, mm (x droite, y haut). */
+  shiftX: number;
+  shiftY: number;
+  /** Preset d'objectif appliqué en dernier ('' = réglage manuel). */
+  presetId: string;
 }
 
 export interface Panel {
@@ -81,6 +90,62 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     if (Number.isFinite(v) && v >= 1) { state.samples = Math.min(1024, v); onChange(); }
   });
 
+  // Presets d'objectif : règlent focale, ouverture, bokeh et shift d'un coup.
+  const syncers: (() => void)[] = [];
+  const preset = el<HTMLSelectElement>('select');
+  preset.append(el<HTMLOptionElement>('option', { value: '' }, 'Réglage manuel'));
+  for (const p of LENS_PRESETS) preset.append(el<HTMLOptionElement>('option', { value: p.id }, p.name));
+  preset.addEventListener('change', () => {
+    const p = getPreset(preset.value);
+    state.presetId = preset.value;
+    if (p) {
+      state.focal = p.focalMm;
+      state.fNumber = p.fNumber;
+      state.aperture = presetAperture(p);
+      state.shiftX = p.shiftMm?.x ?? 0;
+      state.shiftY = p.shiftMm?.y ?? 0;
+    }
+    sync();
+    onChange();
+  });
+
+  /** Curseur + valeur affichée ; toute modification manuelle quitte le preset. */
+  const slider = (label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void, fmt = (v: number) => String(+v.toFixed(2))) => {
+    const range = el<HTMLInputElement>('input', { type: 'range', min: String(min), max: String(max), step: String(step) });
+    const val = el('b', { class: 'val' });
+    const upd = () => { range.value = String(get()); val.textContent = fmt(get()); };
+    range.addEventListener('input', () => {
+      set(parseFloat(range.value));
+      state.presetId = ''; preset.value = '';
+      upd();
+      onChange();
+    });
+    syncers.push(upd);
+    const head = el('span');
+    head.append(label + ' ', val);
+    const row = el('label', { class: 'field' });
+    row.append(head, range);
+    return row;
+  };
+  const ap = <K extends keyof ApertureShape>(k: K) => ({ get: () => state.aperture[k] as number, set: (v: number) => { state.aperture = { ...state.aperture, [k]: v }; } });
+
+  const bokeh = [
+    slider('Lames', 0, 16, 1, ap('blades').get, ap('blades').set, (v) => (v < 3 ? 'cercle' : String(v))),
+    slider('Arrondi des lames', 0, 1, 0.05, ap('roundness').get, ap('roundness').set),
+    slider('Rotation des lames (°)', -90, 90, 1, ap('rotationDeg').get, ap('rotationDeg').set),
+    slider('Aberration sphérique', -1, 1, 0.05, ap('sphericalAberration').get, ap('sphericalAberration').set),
+    slider('Anneaux (onion rings)', 0, 1, 0.05, ap('rings').get, ap('rings').set),
+    slider('Nombre d\'anneaux', 3, 40, 1, ap('ringCount').get, ap('ringCount').set),
+    slider('Cat-eye', 0, 1, 0.05, ap('catEye').get, ap('catEye').set),
+    slider('Swirl (° en bordure)', -90, 90, 1, ap('swirlDeg').get, ap('swirlDeg').set),
+    slider('Squeeze anamorphique', 1, 2, 0.05, ap('squeeze').get, ap('squeeze').set, (v) => `${v.toFixed(2)}x`),
+  ];
+  const shift = [
+    slider('Shift horizontal (mm)', -20, 20, 0.5, () => state.shiftX, (v) => { state.shiftX = v; }),
+    slider('Shift vertical (mm)', -20, 20, 0.5, () => state.shiftY, (v) => { state.shiftY = v; }),
+  ];
+  const title = (t: string) => el('div', { class: 'sep' }, t);
+
   const readout = el('div', { class: 'readout' });
 
   const field = (label: string, ...inputs: HTMLElement[]) => {
@@ -96,6 +161,11 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     field('Mise au point (m)', focus),
     field('Échelle (m / unité)', scale),
     field('Échantillons (cible)', samples),
+    title('Objectif'),
+    field('Preset', preset),
+    ...bokeh,
+    title('Shift'),
+    ...shift,
     readout,
   );
 
@@ -108,6 +178,8 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     fnum.value = String(state.fNumber);
     focus.value = String(+state.focusM.toFixed(3));
     samples.value = String(state.samples);
+    preset.value = state.presetId;
+    for (const f of syncers) f();
     root.classList.toggle('exploring', state.mode === 'explore');
   }
   sync();
