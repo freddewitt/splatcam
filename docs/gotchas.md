@@ -42,6 +42,10 @@
 - LUT : entrée = image Rec.709 affichée (après émulsion ou tone mapping). On ne convertit pas en F-Log : le contenu des splats vient de photos (Rec.709), les LUT F-Log Fujifilm ne sont donc pas utilisables telles quelles. LUT = RGBA32F, largeur arrondie à 16 texels.
 - Banc d'essai d'émulsions : `tools/make-ramp.mjs` (plaques à radiance connue, décodage gamma 2,2 du shader gsplat) ; patches lus en 9×9 px au centre ; positions déduites de la projection (px = 700 + X/(Z·0,36)·675).
 - Mesurer une zone de fond : choisir une fenêtre sans point lumineux (les grilles de test ont un point tous les ~170 px).
+- Flares : étoile lue sur la pyramide du seuil au niveau 1/4, ghosts au 1/16 (un niveau plus net donne des disques grumeleux : 32 prises espacées de plus d'un texel), voile du dirt au 1/64. Le streak a sa propre chaîne (largeur /2 par niveau, hauteur fixée à h/2, première descente depuis le niveau 1/2 de la pyramide). Sortie des flares à demi-résolution, ajoutée dans `comp()` (donc distordue comme le bloom).
+- Étoile : les pointes sont les NORMALES aux côtés du polygone (sommet en haut à rotation 0) ; hexagone → 0 / 60 / 120°. Dans le shader, `uv.y` va vers le bas : direction = (cos a, −sin a). Longueur en pixels de la cible de sortie (fraction de la hauteur). Mesure : anneau de 60 px autour d'une lumière, pics du profil angulaire ; les lumières voisines d'une grille ajoutent des pics parasites.
+- Ghosts : le reflet d'une source en p tombe en c + s·(p − c) ; le shader lit donc la source en c + (q − c)/s ; le centre c est celui du CADRE (le dock masque le bas de la capture : ne pas prendre le milieu de l'écran visible).
+- Une déclaration `uniform` par ligne en WGSL PlayCanvas ; pas de backtick dans les shaders, mais `${CONSTANTE}` du template JS sert à injecter les nombres de prises.
 
 ## Export
 (vide)

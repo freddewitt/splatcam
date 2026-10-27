@@ -192,6 +192,7 @@ export class DofRenderer {
 
   setLens(lens: LensParams): void {
     this.lens = lens;
+    this.post.setAperture(lens.aperture.blades, lens.aperture.roundness, lens.aperture.rotationDeg);
     const key = JSON.stringify(lens.aperture);
     if (key !== this.samplerKey) {
       this.samplerKey = key;

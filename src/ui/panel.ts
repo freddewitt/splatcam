@@ -2,7 +2,7 @@ import { rad2deg, SENSOR_FORMATS, type Fov } from '../optics/sensor';
 import type { ApertureShape } from '../optics/aperture';
 import { FOCUS_MARKS, FOCUS_MIN_M, dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } from '../timeline/shot';
 import { parseCube, type Lut3D } from '../optics/lut';
-import type { PostParams, ToneMap } from '../render/post';
+import { DIRT_SIZE, type PostParams, type ToneMap } from '../render/post';
 import { FILM_STOCKS, getStock, type FilmStock } from '../optics/film-stock';
 import { LENS_PRESETS, getPreset, presetAperture } from '../optics/lens-preset';
 
@@ -36,6 +36,7 @@ export interface PanelState {
   post: PostParams;
   /** Nom du look (.cube) chargé, '' = aucun. */
   lutName: string;
+  dirtName: string;
   /** Preset d'objectif appliqué en dernier ('' = réglage manuel). */
   presetId: string;
 }
@@ -56,7 +57,7 @@ const el = <T extends HTMLElement>(tag: string, attrs: Record<string, string> = 
 
 /** Panneau de contrôle HTML : mode, capteur, focale, échelle, lecture du champ de vision. */
 /** Rappels de l'interface vers le rendu : paramètres de post modifiés (sans refaire les sous-rendus), look chargé. */
-export interface PanelHooks { post(): void; lut(lut: Lut3D | null): void; stock(stock: FilmStock | null): void }
+export interface PanelHooks { post(): void; lut(lut: Lut3D | null): void; stock(stock: FilmStock | null): void; dirt(bytes: Uint8Array | null, size: number): void }
 
 export function createPanel(state: PanelState, onChange: () => void, hooks: PanelHooks): Panel {
   const root = document.getElementById('panel')!;
@@ -242,6 +243,56 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   });
   const lutClear = el<HTMLButtonElement>('button', { type: 'button' }, 'Retirer le look');
   lutClear.addEventListener('click', () => { hooks.lut(null); state.lutName = ''; lutFile.value = ''; sync(); hooks.post(); });
+  // Flares : teinte du streak (bleu = anamorphique classique) et masque de saleté (procédural ou image importée).
+  const STREAK_TINTS: [string, string, number[]][] = [['blue', 'Bleu', [0.35, 0.55, 1]], ['amber', 'Ambre', [1, 0.65, 0.25]], ['neutral', 'Neutre', [1, 1, 1]]];
+  const streakSel = el<HTMLSelectElement>('select');
+  for (const [id, label] of STREAK_TINTS) streakSel.append(el<HTMLOptionElement>('option', { value: id }, label));
+  streakSel.addEventListener('change', () => {
+    const t = STREAK_TINTS.find((x) => x[0] === streakSel.value)!;
+    state.post = { ...state.post, streakTint: t[2] };
+    hooks.post();
+  });
+  const dirtName = el('span', { class: 'val' });
+  const dirtFile = el<HTMLInputElement>('input', { type: 'file', accept: 'image/*' });
+  dirtFile.addEventListener('change', async () => {
+    const f = dirtFile.files?.[0];
+    if (!f) return;
+    try {
+      // Image → luminance 512×512 (le masque est une carte de saleté : clair = sale).
+      const bmp = await createImageBitmap(f);
+      const c = document.createElement('canvas');
+      c.width = c.height = DIRT_SIZE;
+      const g = c.getContext('2d', { willReadFrequently: true })!;
+      g.drawImage(bmp, 0, 0, DIRT_SIZE, DIRT_SIZE);
+      const px = g.getImageData(0, 0, DIRT_SIZE, DIRT_SIZE).data;
+      const bytes = new Uint8Array(DIRT_SIZE * DIRT_SIZE);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = Math.round(0.2126 * px[4 * i] + 0.7152 * px[4 * i + 1] + 0.0722 * px[4 * i + 2]);
+      hooks.dirt(bytes, DIRT_SIZE);
+      state.dirtName = f.name;
+    } catch (e) {
+      dirtName.textContent = `erreur : ${(e as Error).message}`;
+      return;
+    }
+    sync();
+    hooks.post();
+  });
+  const dirtClear = el<HTMLButtonElement>('button', { type: 'button' }, 'Saleté par défaut');
+  dirtClear.addEventListener('click', () => { hooks.dirt(null, DIRT_SIZE); state.dirtName = ''; dirtFile.value = ''; sync(); hooks.post(); });
+  const dirtRow = el('div', { class: 'field' });
+  dirtRow.append(el('span', {}, 'Masque de saleté'), dirtName, dirtFile, dirtClear);
+  const flares = [
+    post('Flares : seuil', 'flareThreshold', 0.5, 6, 0.05),
+    post('Étoile du diaphragme', 'starburst', 0, 2, 0.01),
+    post('Étoile : longueur', 'starburstLength', 0.05, 0.6, 0.01),
+    post('Étoile : pointes (0 = lames)', 'starburstSpikes', 0, 16, 1, (v) => (v === 0 ? 'selon les lames' : String(v))),
+    post('Streak anamorphique', 'streak', 0, 2, 0.01),
+    post('Streak : longueur', 'streakLength', 0, 1, 0.01),
+    field2('Streak : teinte', streakSel),
+    post('Ghosts', 'ghosts', 0, 2, 0.01),
+    post('Ghosts : nombre', 'ghostCount', 1, 6, 1),
+    post('Lens dirt', 'dirt', 0, 2, 0.01),
+    dirtRow,
+  ];
   const film = [
     field2('Émulsion', stockSel),
     field2('Tone mapping (sans émulsion)', toneSel),
@@ -252,6 +303,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     post('Bloom : étendue', 'bloomRadius', 0.3, 0.8, 0.01),
     post('Halation', 'halation', 0, 1, 0.01),
     post('Halation : seuil', 'halationThreshold', 0.5, 3, 0.05),
+    ...flares,
     post('Vignettage naturel (cos⁴)', 'vignetteNatural', 0, 1, 0.01),
     post('Vignettage optique', 'vignetteOptical', 0, 1, 0.01),
     post('Distorsion (+ barillet, − coussinet)', 'distortion', -0.3, 0.3, 0.005),
@@ -314,6 +366,8 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     stockSel.value = state.post.stock;
     isoSel.value = String(state.post.iso);
     lutName.textContent = state.lutName || 'aucun';
+    dirtName.textContent = state.dirtName || 'procédural';
+    streakSel.value = (STREAK_TINTS.find((t) => t[2].join() === state.post.streakTint.join()) ?? STREAK_TINTS[0])[0];
     ring.value = String(dioptersFromMeters(state.focusM));
     ringVal.textContent = state.focusM >= 500 ? '∞' : `${state.focusM.toFixed(2)} m`;
     zoomLog.value = String(zoomFromFocal(Math.min(Math.max(state.focal, 4), 300)));

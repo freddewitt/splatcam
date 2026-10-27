@@ -8,10 +8,15 @@
 // halation (seuil propre, rayons larges) ; (B) composition plein cadre vers l'écran : distorsion, aberration
 // chromatique, vignettage, bruit capteur, ÉMULSION (courbes par canal + couleur) ou tone mapping, LUT
 // (appliquée à l'image Rec.709 affichée), grain de pellicule.
+//
+// Flares (étoile de diffraction, streaks anamorphiques, ghosts, lens dirt) : une pyramide de seuil propre
+// (6 niveaux), une chaîne de flou HORIZONTAL seul pour le streak, puis une passe à demi-résolution qui
+// compose les quatre effets en une texture de lumière ajoutée dans `comp()` avec le bloom.
 
 import * as pc from 'playcanvas';
 import { atlasWidth, lutToAtlas, type Lut3D } from '../optics/lut';
 import { stockUniforms, type FilmStock } from '../optics/film-stock';
+import { GHOSTS, generateDirt, starFirstAngle, starSpikeCount, streakMix } from '../optics/flare';
 
 export type ToneMap = 'none' | 'reinhard' | 'aces';
 const TONE_ID: Record<ToneMap, number> = { none: 0, reinhard: 1, aces: 2 };
@@ -30,6 +35,21 @@ export interface PostParams {
   halation: number;
   halationThreshold: number;
   halationTint: number[];
+  /** Seuil commun des flares (étoile, streak, ghosts, dirt) : ne gardent que ce qui dépasse. */
+  flareThreshold: number;
+  /** Étoile de diffraction du diaphragme : part d'énergie (0 = aucune), longueur (fraction de la hauteur), pointes (0 = selon les lames). */
+  starburst: number;
+  starburstLength: number;
+  starburstSpikes: number;
+  /** Streak anamorphique horizontal : part d'énergie, longueur 0..1, teinte. */
+  streak: number;
+  streakLength: number;
+  streakTint: number[];
+  /** Ghosts (reflets internes) : intensité (0 = aucun) et nombre (1 à 6). */
+  ghosts: number;
+  ghostCount: number;
+  /** Lens dirt : intensité (0 = aucune) ; la lumière diffusée vient des hautes lumières au-dessus du seuil des flares. */
+  dirt: number;
   /** Vignettage naturel cos⁴ (0 à 1) et vignettage optique artistique (0 à 1). */
   vignetteNatural: number;
   vignetteOptical: number;
@@ -53,11 +73,20 @@ export interface PostParams {
 export const DEFAULT_POST: PostParams = {
   exposureEv: 0, highlightGain: 1, toneMap: 'aces',
   bloom: 0, bloomThreshold: 1, bloomRadius: 0.6, halation: 0, halationThreshold: 1, halationTint: [1, 0.3, 0.1],
+  flareThreshold: 1.5, starburst: 0, starburstLength: 0.2, starburstSpikes: 0,
+  streak: 0, streakLength: 0.7, streakTint: [0.35, 0.55, 1], ghosts: 0, ghostCount: 4, dirt: 0,
   vignetteNatural: 0, vignetteOptical: 0, distortion: 0, chromaticAberration: 0,
   iso: 0, grain: 0, grainSize: 1.5, lutAmount: 1, stock: '', seed: 0,
 };
 
 const LEVELS = 6;
+/** Niveaux de la pyramide des flares (1/2 à 1/64) et du streak horizontal (largeur 1/4 à 1/256). */
+const FLARE_LEVELS = 6;
+const STREAK_LEVELS = 7;
+/** Prises par pointe de l'étoile, prises par disque de ghost. */
+const STAR_TAPS = 40;
+const GHOST_TAPS = 32;
+export const DIRT_SIZE = 512;
 
 const SRC_WGSL = /* wgsl */ `
 var accumTex: texture_2d<f32>;
@@ -132,6 +161,170 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
 }
 `;
 
+
+// Streak : filtre binomial horizontal seul (descente : la largeur est divisée par 2, la hauteur reste).
+const STREAK_DOWN_WGSL = /* wgsl */ `
+var srcTex: texture_2d<f32>;
+var srcTexSampler: sampler;
+uniform uTexel: vec2f;   // taille d'un texel de la SOURCE
+varying uv0: vec2f;
+
+fn tap(uv: vec2f) -> vec3f { return textureSampleLevel(srcTex, srcTexSampler, uv, 0.0).rgb; }
+
+@fragment
+fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+  var output: FragmentOutput;
+  let uv = input.uv0;
+  let t = uniform.uTexel.x;
+  // Le centre du texel de sortie tombe entre deux texels source : poids (1 3 3 1) / 8.
+  output.color = vec4f(0.5 * tap(uv) + 0.25 * (tap(uv + vec2f(-t, 0.0)) + tap(uv + vec2f(t, 0.0))), 1.0);
+  return output;
+}
+`;
+
+// Montée du streak : U_k = (1 − m)·D_k + m·flouH(U_{k+1}) (somme des poids = 1, énergie conservée).
+const STREAK_UP_WGSL = /* wgsl */ `
+var lowTex: texture_2d<f32>;
+var lowTexSampler: sampler;
+var hiTex: texture_2d<f32>;
+var hiTexSampler: sampler;
+uniform uTexel: vec2f;   // taille d'un texel de lowTex
+uniform uMix: f32;
+varying uv0: vec2f;
+
+fn tap(uv: vec2f) -> vec3f { return textureSampleLevel(lowTex, lowTexSampler, uv, 0.0).rgb; }
+
+@fragment
+fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+  var output: FragmentOutput;
+  let uv = input.uv0;
+  let t = uniform.uTexel.x;
+  let up = 0.5 * tap(uv) + 0.25 * (tap(uv + vec2f(-t, 0.0)) + tap(uv + vec2f(t, 0.0)));
+  let hi = textureSampleLevel(hiTex, hiTexSampler, uv, 0.0).rgb;
+  output.color = vec4f(mix(hi, up, uniform.uMix), 1.0);
+  return output;
+}
+`;
+
+// Lumière des flares à demi-résolution : étoile de diffraction + streak + ghosts + lens dirt.
+// Les angles de l'étoile et la forme des ghosts sont ceux de optics/flare.ts (testé) et d'aperture.ts.
+const FLARE_WGSL = /* wgsl */ `
+var starTex: texture_2d<f32>;      // hautes lumières au-dessus du seuil, 1/4 de résolution
+var starTexSampler: sampler;
+var ghostTex: texture_2d<f32>;     // idem, 1/16 (plus flou : les ghosts échantillonnent un disque, il faut lisser les prises)
+var ghostTexSampler: sampler;
+var scatterTex: texture_2d<f32>;   // idem, 1/64 : voile de lumière diffusée qui éclaire le dirt
+var scatterTexSampler: sampler;
+var streakTex: texture_2d<f32>;
+var streakTexSampler: sampler;
+var dirtTex: texture_2d<f32>;
+var dirtTexSampler: sampler;
+uniform uOut: vec4f;     // largeur, hauteur de la sortie (px), rapport du cadre, 0
+uniform uStar: vec4f;    // énergie, longueur (px de sortie), nombre de pointes, angle de la première
+uniform uStreak: vec4f;  // énergie, teinte RVB
+uniform uGhost: vec4f;   // intensité, nombre, 0, 0
+uniform uAp: vec4f;      // lames, arrondi, rotation (rad), intensité du dirt
+uniform uGhA: vec4f;     // échelles des reflets 0 à 3
+uniform uGhB: vec4f;     // échelles des reflets 4 et 5, 0, 0
+uniform uGhR: vec4f;     // rayons des reflets 0 à 3
+uniform uGhS: vec4f;     // rayons des reflets 4 et 5, 0, 0
+uniform uGt0: vec4f;     // teintes des reflets 0 à 5
+uniform uGt1: vec4f;
+uniform uGt2: vec4f;
+uniform uGt3: vec4f;
+uniform uGt4: vec4f;
+uniform uGt5: vec4f;
+varying uv0: vec2f;
+
+const TAU = 6.2831853;
+
+// Miroir de bladeBoundary (optics/aperture.ts) : rayon du polygone régulier à N côtés, arrondi par 'roundness'.
+fn bladeBoundary(angle: f32, n: f32, roundness: f32) -> f32 {
+  if (n < 3.0) { return 1.0; }
+  let wedge = TAU / n;
+  let a = ((((angle - 1.5707963) % wedge) + wedge * 1.5) % wedge) - wedge * 0.5;
+  let flat = cos(3.1415927 / n) / cos(wedge * 0.5 - abs(a));
+  return flat + (1.0 - flat) * roundness;
+}
+
+fn pick(a: vec4f, b: vec4f, i: i32) -> f32 { if (i < 4) { return a[i]; } return b[i - 4]; }
+fn tint(i: i32) -> vec3f {
+  if (i == 0) { return uniform.uGt0.xyz; }
+  if (i == 1) { return uniform.uGt1.xyz; }
+  if (i == 2) { return uniform.uGt2.xyz; }
+  if (i == 3) { return uniform.uGt3.xyz; }
+  if (i == 4) { return uniform.uGt4.xyz; }
+  return uniform.uGt5.xyz;
+}
+
+// Étoile : pour chaque pointe, moyenne pondérée (1 − t)² de la source le long du rayon de longueur L.
+// Un point lumineux apparaît donc sur la droite qui passe par lui dans chaque direction de pointe.
+fn starburst(uv: vec2f) -> vec3f {
+  let n = i32(uniform.uStar.z);
+  if (n < 1 || uniform.uStar.x <= 0.0) { return vec3f(0.0); }
+  var acc = vec3f(0.0);
+  var wsum = 0.0;
+  for (var j = 1; j <= ${STAR_TAPS}; j++) { let t = f32(j) / f32(${STAR_TAPS}); wsum += (1.0 - t) * (1.0 - t); }
+  for (var k = 0; k < n; k++) {
+    let a = uniform.uStar.w + f32(k) * TAU / f32(n);
+    let dir = vec2f(cos(a), -sin(a)) / uniform.uOut.xy;      // uv.y vers le bas
+    for (var j = 1; j <= ${STAR_TAPS}; j++) {
+      let t = f32(j) / f32(${STAR_TAPS});
+      let w = (1.0 - t) * (1.0 - t);
+      acc += w * textureSampleLevel(starTex, starTexSampler, uv + dir * (t * uniform.uStar.y), 0.0).rgb;
+    }
+  }
+  return acc / (wsum * f32(n)) * uniform.uStar.x;
+}
+
+// Ghosts : le reflet i d'une source en p tombe en c + s_i (p − c). Pour un pixel q on lit la source en
+// c + (q + R o_j − c) / s_i, o_j étant des points du polygone de l'ouverture (le reflet a la forme du diaphragme).
+fn ghosts(uv: vec2f) -> vec3f {
+  let count = i32(uniform.uGhost.y);
+  if (count < 1 || uniform.uGhost.x <= 0.0) { return vec3f(0.0); }
+  let rot = uniform.uAp.z;
+  var acc = vec3f(0.0);
+  for (var i = 0; i < 6; i++) {
+    if (i >= count) { break; }
+    let s = pick(uniform.uGhA, uniform.uGhB, i);
+    let rad = pick(uniform.uGhR, uniform.uGhS, i);
+    var sum = vec3f(0.0);
+    for (var j = 0; j < ${GHOST_TAPS}; j++) {
+      let r = sqrt((f32(j) + 0.5) / f32(${GHOST_TAPS}));
+      let ang = f32(j) * 2.3999632;
+      let b = bladeBoundary(ang - rot, uniform.uAp.x, uniform.uAp.y);
+      let o = vec2f(cos(ang), -sin(ang)) * (r * b * rad);     // y vers le bas, en hauteur de cadre
+      let q = uv + vec2f(o.x / uniform.uOut.z, o.y);
+      let p = vec2f(0.5) + (q - vec2f(0.5)) / s;
+      let inside = step(0.0, p.x) * step(p.x, 1.0) * step(0.0, p.y) * step(p.y, 1.0);
+      sum += textureSampleLevel(ghostTex, ghostTexSampler, p, 0.0).rgb * inside;
+    }
+    // Les reflets s'éteignent vers les bords du cadre (là où la lentille les coupe).
+    let d = length((uv - vec2f(0.5)) * vec2f(uniform.uOut.z, 1.0)) / (0.5 * sqrt(uniform.uOut.z * uniform.uOut.z + 1.0));
+    acc += sum / f32(${GHOST_TAPS}) * tint(i) * (1.0 - smoothstep(0.6, 1.05, d));
+  }
+  return acc * uniform.uGhost.x;
+}
+
+@fragment
+fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+  var output: FragmentOutput;
+  let uv = input.uv0;
+  var light = starburst(uv) + ghosts(uv);
+  if (uniform.uStreak.x > 0.0) {
+    light += textureSampleLevel(streakTex, streakTexSampler, uv, 0.0).rgb * uniform.uStreak.yzw * uniform.uStreak.x;
+  }
+  // Lens dirt : les saletés diffusent la lumière des hautes lumières (voile large) et celle des flares.
+  if (uniform.uAp.w > 0.0) {
+    let scatter = textureSampleLevel(scatterTex, scatterTexSampler, uv, 0.0).rgb;
+    let dirt = textureSampleLevel(dirtTex, dirtTexSampler, uv, 0.0).r;
+    light += dirt * uniform.uAp.w * (scatter * 4.0 + light * 0.5);
+  }
+  output.color = vec4f(light, 1.0);
+  return output;
+}
+`;
+
 // Composition. Les formules de vignettage, distorsion, bruit et tone mapping sont celles de
 // optics/lens-effects.ts (testées) ; l'émulsion est celle de optics/film-stock.ts (filmLook, testée) ;
 // le look est celui de optics/lut.ts (applyLut).
@@ -144,6 +337,9 @@ var halaTex: texture_2d<f32>;
 var halaTexSampler: sampler;
 var lutTex: texture_2d<f32>;
 var lutTexSampler: sampler;
+var flareTex: texture_2d<f32>;
+var flareTexSampler: sampler;
+uniform uF: vec4f;   // 1 = lumière des flares ajoutée
 uniform uA: vec4f;   // bloom, halation, k1 (distorsion), k2
 uniform uB: vec4f;   // aberration chromatique, ajustement du cadre (barillet), rapport du cadre
 uniform uC: vec4f;   // vignettage naturel, optique, tan(demi-champ H), tan(demi-champ V)
@@ -176,6 +372,7 @@ fn comp(uv: vec2f) -> vec3f {
     let headroom = 1.0 - smoothstep(0.7, 1.5, dot(o, LUMA));
     o += textureSampleLevel(halaTex, halaTexSampler, uv, 0.0).rgb * uniform.uTint.xyz * uniform.uA.y * headroom;
   }
+  if (uniform.uF.x > 0.5) { o += textureSampleLevel(flareTex, flareTexSampler, uv, 0.0).rgb; }
   return o;
 }
 
@@ -350,6 +547,9 @@ interface Target { tex: pc.Texture; rt: pc.RenderTarget }
 /** Pyramide de flou : niveaux 1..LEVELS (descente) et 1..LEVELS−1 (montée). */
 interface Chain { down: Target[]; up: Target[] }
 
+/** Cibles des flares : seuil (1/2 à 1/16), streak horizontal (descente et montée), lumière composée (1/2). */
+interface FlareTargets { bright: Target[]; streakDown: Target[]; streakUp: Target[]; out: Target }
+
 export class PostProcessor {
   private readonly srcShader: pc.Shader;
   private readonly downShader: pc.Shader;
@@ -363,6 +563,15 @@ export class PostProcessor {
   private lutTex: pc.Texture;
   private lutSize = 0;
   private stock: FilmStock | null = null;
+  private readonly streakDownShader: pc.Shader;
+  private readonly streakUpShader: pc.Shader;
+  private readonly flareShader: pc.Shader;
+  private flare: FlareTargets | null = null;
+  private dirtTex: pc.Texture;
+  private dirtBytes: Uint8Array | null = null;
+  private dirtSize = DIRT_SIZE;
+  /** Forme du diaphragme (lames, arrondi, rotation °) : pointes de l'étoile et forme des ghosts. */
+  private aperture = { blades: 0, roundness: 1, rotationDeg: 0 };
 
   constructor(private readonly device: pc.GraphicsDevice) {
     const mk = (name: string, fragmentWGSL: string) => pc.ShaderUtils.createShader(device, {
@@ -372,6 +581,10 @@ export class PostProcessor {
     this.downShader = mk('SplatCamPostDown', DOWN_WGSL);
     this.upShader = mk('SplatCamPostUp', UP_WGSL);
     this.compShader = mk('SplatCamPostComp', COMP_WGSL);
+    this.streakDownShader = mk('SplatCamStreakDown', STREAK_DOWN_WGSL);
+    this.streakUpShader = mk('SplatCamStreakUp', STREAK_UP_WGSL);
+    this.flareShader = mk('SplatCamFlare', FLARE_WGSL);
+    this.dirtTex = this.makeDirtTexture(new Uint8Array(4), 1);
     this.lutTex = this.makeLutTexture(new Float32Array([0, 0, 0, 1]), 1, 1);
   }
 
@@ -397,6 +610,39 @@ export class PostProcessor {
   /** Émulsion active (courbes par canal et couleur) ; null = tone mapping seul. */
   setStock(stock: FilmStock | null): void { this.stock = stock; }
 
+  /** Forme du diaphragme de l'objectif courant (étoile et ghosts). */
+  setAperture(blades: number, roundness: number, rotationDeg: number): void { this.aperture = { blades, roundness, rotationDeg }; }
+
+  private makeDirtTexture(rgba: Uint8Array, size: number): pc.Texture {
+    return new pc.Texture(this.device, {
+      name: 'splatcam-dirt', width: size, height: size, format: pc.PIXELFORMAT_RGBA8, mipmaps: false,
+      minFilter: pc.FILTER_LINEAR, magFilter: pc.FILTER_LINEAR,
+      addressU: pc.ADDRESS_CLAMP_TO_EDGE, addressV: pc.ADDRESS_CLAMP_TO_EDGE,
+      levels: [rgba],
+    });
+  }
+
+  /** Masque de saleté (un octet par texel, `size`×`size`, 255 = opaque) ; null = masque procédural par défaut. */
+  setDirt(bytes: Uint8Array | null, size = DIRT_SIZE): void {
+    this.dirtBytes = bytes;
+    this.dirtSize = size;
+    this.dirtTex.destroy();
+    this.dirtTex = this.makeDirtTexture(new Uint8Array(4), 1);   // recréée au prochain usage (voir run)
+    this.dirtReady = false;
+  }
+  private dirtReady = false;
+
+  private ensureDirt(): void {
+    if (this.dirtReady) return;
+    const bytes = this.dirtBytes ?? generateDirt(DIRT_SIZE, 1);
+    const size = this.dirtBytes ? this.dirtSize : DIRT_SIZE;
+    const rgba = new Uint8Array(size * size * 4);
+    for (let i = 0; i < size * size; i++) { rgba[4 * i] = rgba[4 * i + 1] = rgba[4 * i + 2] = bytes[i]; rgba[4 * i + 3] = 255; }
+    this.dirtTex.destroy();
+    this.dirtTex = this.makeDirtTexture(rgba, size);
+    this.dirtReady = true;
+  }
+
   private makeTarget(w: number, h: number, name: string): Target {
     const tex = new pc.Texture(this.device, {
       name, width: w, height: h, format: pc.PIXELFORMAT_RGBA16F, mipmaps: false,
@@ -419,10 +665,96 @@ export class PostProcessor {
     if (w === this.w && h === this.h && this.src) return;
     this.freeAll(this.src ? [this.src] : []);
     for (const c of [this.bloomChain, this.halaChain]) if (c) { this.freeAll(c.down); this.freeAll(c.up); }
+    this.freeFlare();
     this.src = this.makeTarget(w, h, 'splatcam-post-src');
     this.bloomChain = this.makeChain(w, h, 'splatcam-bloom');
     this.halaChain = this.makeChain(w, h, 'splatcam-hala');
     this.w = w; this.h = h;
+  }
+
+  /** Descente « dual » de `src` à travers `downs`, seuil doux au premier niveau. */
+  private downsample(downs: Target[], src: Target, threshold: number): void {
+    const { scope } = this.device;
+    for (let k = 0; k < downs.length; k++) {
+      const from = k === 0 ? src : downs[k - 1];
+      scope.resolve('srcTex').setValue(from.tex);
+      scope.resolve('uTexel').setValue([1 / from.tex.width, 1 / from.tex.height]);
+      scope.resolve('uPre').setValue([threshold, 0.5 * threshold, k === 0 ? 1 : 0, 0]);
+      pc.drawQuadWithShader(this.device, downs[k].rt, this.downShader);
+    }
+  }
+
+  private freeFlare(): void {
+    if (!this.flare) return;
+    this.freeAll(this.flare.bright); this.freeAll(this.flare.streakDown); this.freeAll(this.flare.streakUp); this.freeAll([this.flare.out]);
+    this.flare = null;
+  }
+
+  private ensureFlare(): FlareTargets {
+    if (this.flare) return this.flare;
+    const { w, h } = this;
+    const bright: Target[] = [], streakDown: Target[] = [], streakUp: Target[] = [];
+    for (let k = 1; k <= FLARE_LEVELS; k++) bright.push(this.makeTarget(Math.max(1, w >> k), Math.max(1, h >> k), `splatcam-flare-${k}`));
+    for (let k = 0; k < STREAK_LEVELS; k++) {
+      const t = (n: string) => this.makeTarget(Math.max(1, w >> (k + 2)), Math.max(1, h >> 1), `splatcam-streak-${n}-${k}`);
+      streakDown.push(t('down'));
+      if (k < STREAK_LEVELS - 1) streakUp.push(t('up'));
+    }
+    this.flare = { bright, streakDown, streakUp, out: this.makeTarget(Math.max(1, w >> 1), Math.max(1, h >> 1), 'splatcam-flare-out') };
+    return this.flare;
+  }
+
+  /**
+   * Lumière des flares (étoile, streak, ghosts, dirt) à demi-résolution. Renvoie sa texture, ou null si rien n'est actif.
+   * Le streak est un flou horizontal seul sur la pyramide du seuil : montée U_k = (1 − m)·D_k + m·flou(U_{k+1}).
+   */
+  private flarePass(src: Target, p: PostParams, aspect: number): pc.Texture | null {
+    if (p.starburst <= 0 && p.streak <= 0 && p.ghosts <= 0 && p.dirt <= 0) return null;
+    const { scope } = this.device;
+    const f = this.ensureFlare();
+    this.downsample(f.bright, src, p.flareThreshold);
+
+    if (p.streak > 0) {
+      for (let k = 0; k < STREAK_LEVELS; k++) {
+        const from = k === 0 ? f.bright[0] : f.streakDown[k - 1];
+        scope.resolve('srcTex').setValue(from.tex);
+        scope.resolve('uTexel').setValue([1 / from.tex.width, 1 / from.tex.height]);
+        pc.drawQuadWithShader(this.device, f.streakDown[k].rt, this.streakDownShader);
+      }
+      const m = streakMix(p.streakLength);
+      for (let k = STREAK_LEVELS - 2; k >= 0; k--) {
+        const low = k === STREAK_LEVELS - 2 ? f.streakDown[STREAK_LEVELS - 1] : f.streakUp[k + 1];
+        scope.resolve('lowTex').setValue(low.tex);
+        scope.resolve('hiTex').setValue(f.streakDown[k].tex);
+        scope.resolve('uTexel').setValue([1 / low.tex.width, 1 / low.tex.height]);
+        scope.resolve('uMix').setValue(m);
+        pc.drawQuadWithShader(this.device, f.streakUp[k].rt, this.streakUpShader);
+      }
+    }
+    if (p.dirt > 0) this.ensureDirt();
+
+    const out = f.out;
+    const ap = this.aperture;
+    const spikes = p.starburst > 0 ? starSpikeCount(ap.blades, p.starburstSpikes) : 0;
+    scope.resolve('starTex').setValue(f.bright[1].tex);
+    scope.resolve('ghostTex').setValue(f.bright[3].tex);
+    scope.resolve('scatterTex').setValue(f.bright[5].tex);
+    scope.resolve('streakTex').setValue(p.streak > 0 ? f.streakUp[0].tex : f.bright[0].tex);
+    scope.resolve('dirtTex').setValue(this.dirtTex);
+    scope.resolve('uOut').setValue([out.tex.width, out.tex.height, aspect, 0]);
+    // Longueur de pointe en pixels de la sortie (fraction de la hauteur du cadre).
+    scope.resolve('uStar').setValue([p.starburst, p.starburstLength * out.tex.height, spikes, starFirstAngle(ap.blades, ap.rotationDeg)]);
+    scope.resolve('uStreak').setValue([p.streak, p.streakTint[0], p.streakTint[1], p.streakTint[2]]);
+    scope.resolve('uGhost').setValue([p.ghosts, Math.min(Math.max(Math.round(p.ghostCount), 1), GHOSTS.length), 0, 0]);
+    scope.resolve('uAp').setValue([ap.blades, ap.roundness, (ap.rotationDeg * Math.PI) / 180, p.dirt]);
+    const g = GHOSTS;
+    scope.resolve('uGhA').setValue([g[0].scale, g[1].scale, g[2].scale, g[3].scale]);
+    scope.resolve('uGhB').setValue([g[4].scale, g[5].scale, 0, 0]);
+    scope.resolve('uGhR').setValue([g[0].radius, g[1].radius, g[2].radius, g[3].radius]);
+    scope.resolve('uGhS').setValue([g[4].radius, g[5].radius, 0, 0]);
+    for (let i = 0; i < 6; i++) scope.resolve(`uGt${i}`).setValue([g[i].tint[0], g[i].tint[1], g[i].tint[2], 0]);
+    pc.drawQuadWithShader(this.device, out.rt, this.flareShader);
+    return out.tex;
   }
 
   /**
@@ -432,13 +764,7 @@ export class PostProcessor {
   private blur(chain: Chain, src: Target, threshold: number, mix: number): Target[] {
     const { scope } = this.device;
     const draw = (rt: pc.RenderTarget, shader: pc.Shader) => pc.drawQuadWithShader(this.device, rt, shader);
-    for (let k = 0; k < LEVELS; k++) {
-      const from = k === 0 ? src : chain.down[k - 1];
-      scope.resolve('srcTex').setValue(from.tex);
-      scope.resolve('uTexel').setValue([1 / from.tex.width, 1 / from.tex.height]);
-      scope.resolve('uPre').setValue([threshold, 0.5 * threshold, k === 0 ? 1 : 0, 0]);
-      draw(chain.down[k].rt, this.downShader);
-    }
+    this.downsample(chain.down, src, threshold);
     for (let k = LEVELS - 1; k >= 1; k--) {
       const low = k === LEVELS - 1 ? chain.down[LEVELS - 1] : chain.up[k];
       scope.resolve('lowTex').setValue(low.tex);
@@ -466,8 +792,12 @@ export class PostProcessor {
     const bloomUp = p.bloom > 0 ? this.blur(this.bloomChain!, src, p.bloomThreshold, p.bloomRadius) : null;
     const halaUp = p.halation > 0 ? this.blur(this.halaChain!, src, p.halationThreshold, 0.75) : null;
 
+    const flareTex = this.flarePass(src, p, aspect);
+
     const dist = p.distortion;
     scope.resolve('srcTex').setValue(src.tex);
+    scope.resolve('flareTex').setValue(flareTex ?? src.tex);
+    scope.resolve('uF').setValue([flareTex ? 1 : 0, 0, 0, 0]);
     scope.resolve('bloomTex').setValue(bloomUp ? bloomUp[0].tex : src.tex);   // U1 : tous les rayons
     scope.resolve('halaTex').setValue(halaUp ? halaUp[2].tex : src.tex);      // U3 : rayons larges
     scope.resolve('lutTex').setValue(this.lutTex);

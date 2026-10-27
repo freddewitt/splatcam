@@ -31,7 +31,7 @@ window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); })
 
 // État réglable depuis le panneau.
 const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
-  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, post: { ...DEFAULT_POST }, lutName: '', presetId: '' };
+  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, post: { ...DEFAULT_POST }, lutName: '', dirtName: '', presetId: '' };
 
 // Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
 app.autoRender = false;
@@ -110,6 +110,7 @@ const panel = createPanel(state, applyCameras, {
   post: () => dof.setPost(state.post),
   lut: (lut) => dof.postProcessor.setLut(lut),
   stock: (s) => dof.postProcessor.setStock(s),
+  dirt: (bytes, size) => dof.postProcessor.setDirt(bytes, size),
 });
 dof.postParams = state.post;
 applyCameras();
