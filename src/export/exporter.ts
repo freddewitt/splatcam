@@ -6,9 +6,8 @@
 // bruit capteur / grain est semé par le numéro d'image, la caméra vient du plan à t = i / fps.
 
 import type { DofRenderer } from '../render/dof-renderer';
-import { encodePng16 } from './png16';
-import { META_NAME, type Sink } from './sinks';
-import { fingerprint, frameName, frameTime, pendingFrames, stableStringify } from './sequence';
+import type { FrameWriter } from './writers';
+import { fingerprint, frameTime, pendingFrames, stableStringify } from './sequence';
 
 /** Ce que l'export demande à l'application (caméra, plan, état à restaurer). */
 export interface ExportHost {
@@ -53,7 +52,7 @@ const STEP_SAMPLES = 4;
 
 export class Exporter {
   private run: {
-    job: ExportJob; sink: Sink; pending: number[]; i: number; started: boolean;
+    job: ExportJob; writer: FrameWriter; pending: number[]; i: number; started: boolean;
     phase: 'render' | 'write'; written: number; cancel: boolean; done: (e: ExportEnd) => void;
   } | null = null;
 
@@ -64,21 +63,21 @@ export class Exporter {
   cancel(): void { if (this.run) this.run.cancel = true; }
 
   /** Lance l'export ; la promesse se résout à la fin (réussie, annulée ou en erreur). */
-  async start(job: ExportJob, sink: Sink): Promise<ExportEnd> {
+  async start(job: ExportJob, writer: FrameWriter): Promise<ExportEnd> {
     if (this.run) return { ok: false, cancelled: false, message: 'Un export est déjà en cours.' };
     const key = fingerprint(stableStringify({ settings: this.host.settings(), w: job.width, h: job.height, n: job.samples, fps: job.fps, total: job.total }));
     let pending = job.frames;
     try {
-      if (job.resume) {
-        const meta = await sink.readMeta();
+      if (job.resume && writer.resumable) {
+        const meta = await writer.readMeta();
         const prev = meta ? (JSON.parse(meta) as { key?: string }).key : undefined;
-        const done = await sink.existing();
+        const done = await writer.existing();
         if (done.size > 0 && prev !== key) {
           return { ok: false, cancelled: false, message: 'Reprise impossible : les réglages (ou la résolution, les échantillons, le plan) ont changé depuis les images déjà écrites. Décocher « Reprendre » pour tout réécrire.' };
         }
         pending = pendingFrames(job.total, done).filter((f) => job.frames.includes(f));
       }
-      await sink.write(META_NAME, JSON.stringify({ key, width: job.width, height: job.height, samples: job.samples, fps: job.fps, total: job.total, settings: this.host.settings() }, null, 2));
+      await writer.writeMeta(JSON.stringify({ key, width: job.width, height: job.height, samples: job.samples, fps: job.fps, total: job.total, settings: this.host.settings() }, null, 2));
     } catch (e) {
       return { ok: false, cancelled: false, message: `Destination inutilisable : ${(e as Error).message}` };
     }
@@ -87,7 +86,7 @@ export class Exporter {
     this.host.prepare();
     this.host.dof.beginStill(job.width, job.height);
     return new Promise<ExportEnd>((resolve) => {
-      this.run = { job, sink, pending, i: 0, started: false, phase: 'render', written: 0, cancel: false, done: resolve };
+      this.run = { job, writer, pending, i: 0, started: false, phase: 'render', written: 0, cancel: false, done: resolve };
     });
   }
 
@@ -96,7 +95,7 @@ export class Exporter {
     const r = this.run;
     if (!r) return false;
     if (r.phase === 'write') return true;                 // relecture / encodage / écriture en cours (asynchrone)
-    if (r.cancel) { void this.end({ ok: false, cancelled: true, message: r.sink.abort() }); return true; }
+    if (r.cancel) { void r.writer.abort().then((message) => this.end({ ok: false, cancelled: true, message })); return true; }
 
     const frame = r.pending[r.i];
     const dof = this.host.dof;
@@ -114,7 +113,7 @@ export class Exporter {
         this.onProgress({ done: r.i, count: r.pending.length, frame, sample: r.job.samples, samples: r.job.samples });
         if (r.i >= r.pending.length) void this.finishOk();   // la phase reste « write » : plus de rendu
         else r.phase = 'render';
-      }, (e: unknown) => this.end({ ok: false, cancelled: false, message: `Erreur à l'image ${frame + 1} : ${(e as Error).message}` }));
+      }, (e: unknown) => { void r.writer.abort(); return this.end({ ok: false, cancelled: false, message: `Erreur à l'image ${frame + 1} : ${(e as Error).message}` }); });
     }
     return true;
   }
@@ -122,14 +121,13 @@ export class Exporter {
   private async writeFrame(frame: number): Promise<void> {
     const r = this.run!;
     const px = await this.host.dof.readStill();
-    const png = await encodePng16(px, r.job.width, r.job.height);
-    await r.sink.write(frameName(frame), png);
+    await r.writer.write(frame, px, r.job.width, r.job.height);
   }
 
   private async finishOk(): Promise<void> {
     const r = this.run!;
     try {
-      const msg = await r.sink.finish();
+      const msg = await r.writer.finish();
       await this.end({ ok: true, message: `${r.written} image(s) exportée(s). ${msg}`, written: r.written });
     } catch (e) {
       await this.end({ ok: false, cancelled: false, message: `Fin d'export impossible : ${(e as Error).message}` });

@@ -7,7 +7,7 @@ import { buildZip, type ZipEntry } from './zip';
 export const META_NAME = 'shot_export.json';
 
 export interface Sink {
-  readonly kind: 'folder' | 'zip';
+  readonly kind: 'folder' | 'zip' | 'download';
   /** Numéros d'images (base 0) déjà écrits. */
   existing(): Promise<Set<number>>;
   readMeta(): Promise<string | null>;
@@ -87,5 +87,25 @@ export function zipSink(archiveName = 'shot.zip'): Sink {
       return `${entries.length} fichiers dans ${archiveName}.`;
     },
     abort() { entries.length = 0; return 'Interrompu : l\'archive en mémoire est abandonnée (un dossier permet de reprendre).'; },
+  };
+}
+
+/** Un fichier unique téléchargé tel quel (vidéo MP4 sans dossier choisi). */
+export function downloadSink(): Sink {
+  let last = '';
+  return {
+    kind: 'download',
+    async existing() { return new Set<number>(); },
+    async readMeta() { return null; },
+    async write(name, data) {
+      last = name;
+      const url = URL.createObjectURL(new Blob([data as BlobPart]));
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    },
+    async finish() { return last ? `Téléchargé : ${last}.` : 'Rien à télécharger.'; },
+    abort() { return 'Interrompu.'; },
   };
 }

@@ -13,6 +13,7 @@ import { sampleShot } from './timeline/shot';
 import { createTimelineUI } from './ui/timeline-ui';
 import { Exporter, type ExportHost } from './export/exporter';
 import { folderSink } from './export/sinks';
+import { pngWriter } from './export/writers';
 import { createExportUi } from './ui/export-ui';
 import { CAMERA_TRACKS } from './timeline/shot';
 
@@ -397,7 +398,7 @@ app.on('update', (dt: number) => {
 
 // Handle de debug pour les tests visuels (dev uniquement).
 if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).__splatcam = { folderSink, exporter, exportHost, state, orbits, applyCameras, dof, panel, device, canvas, timeline, shoot };
+  (window as unknown as Record<string, unknown>).__splatcam = { pngWriter, folderSink, exporter, exportHost, state, orbits, applyCameras, dof, panel, device, canvas, timeline, shoot };
 }
 
 app.start();

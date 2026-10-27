@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "mediabunny": "^1.62.1",
     "playcanvas": "^2.23.3"
   },
   "devDependencies": {

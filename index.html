@@ -34,7 +34,7 @@
     #export .open { position: fixed; top: 40px; left: 8px; padding: 4px 10px; min-height: 30px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
     #export .box { position: fixed; inset: 0; background: #000a; display: grid; place-items: center; z-index: 10; }
     #export .box.hidden { display: none; }
-    #export .card { width: 340px; max-width: calc(100vw - 32px); box-sizing: border-box; padding: 14px; background: #181818; border: 1px solid #444; border-radius: 8px; display: grid; gap: 8px; }
+    #export .card { max-height: calc(100vh - 32px); overflow-y: auto; width: 340px; max-width: calc(100vw - 32px); box-sizing: border-box; padding: 14px; background: #181818; border: 1px solid #444; border-radius: 8px; display: grid; gap: 8px; }
     #export h3 { margin: 0; font-size: 14px; }
     #export .field { display: grid; gap: 4px; }
     #export .field span, #export .status { color: #999; font-size: 11px; }
@@ -46,6 +46,11 @@
     #export .row { display: flex; gap: 6px; }
     #export .row button { flex: 1; padding: 8px; min-height: 36px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
     #export .row button.go { background: #357; border-color: #79c; color: #fff; }
+    #export .cmds { display: grid; gap: 6px; }
+    #export .cmd { display: grid; gap: 4px; }
+    #export .cmd span { color: #999; font-size: 11px; }
+    #export textarea { width: 100%; box-sizing: border-box; background: #111; color: #9c9; border: 1px solid #555; border-radius: 4px; font: 11px ui-monospace, Menlo, monospace; resize: vertical; }
+    #export .cmd button { padding: 4px; min-height: 28px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
     #export button:disabled { opacity: .4; }
     #hint { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 16px; color: #888; text-align: center; }
   </style>

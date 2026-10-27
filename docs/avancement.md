@@ -108,5 +108,17 @@
 - Captures : `docs/captures/M7.png` (image exportée, identique à l'aperçu), `M7-dialogue.png`. Réglages : `Tribunal3b_export_28000.ply`, Super 35 35 mm, f/4, 32 éch., pose par défaut au chargement, export 1400×788.
 - Prochaine étape : M7bis (MP4 H.264 par WebCodecs + Mediabunny, commande ffmpeg affichée en fin de séquence, mention « aperçu 8 bits »).
 
-## M7bis, M8
+## M7bis. Export vidéo
+- Statut : en cours (livré et testé en automatique ; reste le jugement de l'utilisateur sur l'interface et un vrai dossier)
+- Date : 2026-10-27
+- Commit : voir `git log` (« M7bis : aperçu MP4 … »)
+- Livré : format « Aperçu MP4 (8 bits) » dans la fenêtre d'export : mêmes rendus déterministes que le PNG, cadence = réglage Cadence du panneau (24 / 25 / 30, 25 par défaut), débit réglable en Mbit/s (défaut ≈ 0,25 bit/pixel/image), codec choisi parmi ceux que Chrome sait réellement encoder (interrogés à l'exécution), destination dossier ou téléchargement. Fin d'une séquence PNG : deux commandes `ffmpeg` prêtes à copier (ProRes 4444 et H.265 10 bits) ; la mention « aperçu 8 bits, la séquence PNG 16 bits reste le master » est affichée dans la fenêtre.
+- Code : `src/export/mp4.ts` (Mediabunny 1.62.1, licence MPL-2.0 : `VideoSampleSource` + `Mp4OutputFormat`, `canEncodeVideo`), `video-plan.ts` (quantification 8 bits, débit, commandes ffmpeg : purs, 4 tests), `writers.ts` (interface `FrameWriter` : `pngWriter` / `mp4Writer`, l'`Exporter` ne connaît plus les PNG), `sinks.ts` (`downloadSink`).
+- Codecs vérifiés (Chrome sur macOS, `VideoEncoder.isConfigSupported`, 1920×1080 et 3840×2160, 25 i/s, 20 Mbit/s) : H.264 (`avc1.640033`), H.265 (`hvc1.1.6.L153.B0`), VP9 et AV1 encodables ; l'app propose H.264 et H.265 (MP4). Dépend de la machine : c'est interrogé à chaque ouverture / changement de taille.
+- Mesures : MP4 de 15 images 1280×720 lu par `ffprobe` : h264 High, yuv420p, 25/25 i/s, 0,6 s, 15 images, balises bt709 / sRGB (`iec61966-2-1`), plage tv ; image 0 décodée par ffmpeg vs PNG de la même image : écart moyen 1,7/255 (scène grise), 0,6/255 et biais −1/255 sur les 165 000 pixels saturés de `samples/ramp.ply` (une erreur de matrice BT.601 / 709 donnerait 5 à 10) ; commandes ffmpeg affichées lancées telles quelles sur une séquence exportée (5 PNG) : ProRes 4444 (1280×720, 5 images, 25 i/s) et H.265 Main 10 yuv420p10le, balises bt709 / sRGB, code de retour 0 ; PNG : déterminisme, annulation, reprise toujours identiques après le refactor.
+- Approximatif / non fait : l'annulation d'un export MP4 (`Mp4Encoder.cancel`) n'est pas testée ; MP4 entièrement en mémoire ; pas de reprise (vidéo d'un trait) ; pas de HEVC garanti (selon la machine) ; balise de transfert `iec61966-2-1` sur les sorties ffmpeg : certains lecteurs peuvent l'ignorer ou la remplacer par bt709 ; débit constant non proposé (variable par défaut) ; pas d'audio.
+- Captures : `docs/captures/M7bis.png` (fenêtre avec les commandes ffmpeg après une séquence PNG).
+- Prochaine étape : M8 (projet JSON, raccourcis clavier, interface mobile en HTTPS local, pilotage depuis le téléphone).
+
+## M8
 - Statut : à faire
