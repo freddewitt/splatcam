@@ -9,6 +9,7 @@
 
 import * as pc from 'playcanvas';
 import { apertureDiameter, apertureScale, shearTerm } from '../optics/dof';
+import { isTilted, tiltGradient, tiltWarp, type Tilt } from '../optics/tilt';
 import { ApertureSampler, DEFAULT_APERTURE, apertureMask, type ApertureShape } from '../optics/aperture';
 
 export interface LensParams {
@@ -26,6 +27,8 @@ export interface LensParams {
   aperture: ApertureShape;
   /** Shift de l'objectif en NDC (2 · décalage_mm / taille_capteur_mm) : > 0 = cadre vers la droite / le haut. */
   shiftNdc: { x: number; y: number };
+  /** Tilt / swing de l'objectif (°) : plan de netteté incliné. */
+  tiltDeg: Tilt;
 }
 
 // Passe d'accumulation : somme pondérée, un échantillon à la fois.
@@ -37,7 +40,9 @@ var prevTex: texture_2d<f32>;
 var prevTexSampler: sampler;
 uniform uSample: vec2f;   // décalage normalisé u dans le disque unité (avant squeeze)
 uniform uShape: vec4f;    // lames, arrondi, rotation (rad), cat-eye
-uniform uField: vec4f;    // swirl (rad), rapport du cadre, 1 = premier échantillon (ignore prevTex)
+uniform uField: vec4f;    // swirl (rad), rapport du cadre, 1 = premier échantillon (ignore prevTex), 1 = tilt actif
+uniform uWarp: vec4f;     // tilt : m00, m01, m10, m11 de I − o·τᵀ (voir optics/tilt.ts)
+uniform uProj: vec4f;     // tilt : P00, P11, shift NDC x, y
 varying uv0: vec2f;
 
 const PI: f32 = 3.14159265;
@@ -80,7 +85,20 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   let f = (input.uv0 * 2.0 - 1.0) * vec2f(aspect, -1.0) / sqrt(aspect * aspect + 1.0);
   let w = apertureWeight(uniform.uSample, f);
   let prev = select(textureLoad(prevTex, p, 0), vec4f(0.0), uniform.uField.z > 0.5);
-  let scene = select(vec4f(0.0), vec4f(textureLoad(sceneTex, p, 0).rgb, 1.0), w > 0.5);
+  var rgb = textureLoad(sceneTex, p, 0).rgb;
+  if (uniform.uField.w > 0.5) {
+    // Tilt (Scheimpflug) : le sous-rendu, cisaillé pour le plan perpendiculaire, voit le plan incliné
+    // décalé. On relit l'image aux tangentes v' = (I − o·τᵀ)·v (v = (ndc + shift) / P, ndc = P·v − shift).
+    let pr = uniform.uProj.xy;
+    let sh = uniform.uProj.zw;
+    let ndc = vec2f(input.uv0.x * 2.0 - 1.0, 1.0 - input.uv0.y * 2.0);
+    let v = (ndc + sh) / pr;
+    let m = uniform.uWarp;
+    let vo = vec2f(m.x * v.x + m.y * v.y, m.z * v.x + m.w * v.y);
+    let uvo = vec2f((pr.x * vo.x - sh.x) * 0.5 + 0.5, 0.5 - (pr.y * vo.y - sh.y) * 0.5);
+    rgb = textureSampleLevel(sceneTex, sceneTexSampler, uvo, 0.0).rgb;
+  }
+  let scene = select(vec4f(0.0), vec4f(rgb, 1.0), w > 0.5);
   output.color = prev + scene;
   return output;
 }
@@ -134,6 +152,8 @@ export class DofRenderer {
   private centerAcceptance = 1;
   /** Échantillon courant (masque lu par l'accumulation). */
   private cur_u: [number, number] = [0, 0];
+  /** Tilt de l'échantillon courant : matrice I − o·τᵀ et paramètres de projection (lus par l'accumulation). */
+  private warp = { on: false, m: [1, 0, 0, 1] as number[], proj: [1, 1, 0, 0] as number[] };
   private readonly screenRect = new pc.Vec4();
   private inSubRender = false;
   private presentNow = false;
@@ -175,10 +195,10 @@ export class DofRenderer {
 
   get currentLens(): LensParams | null { return this.lens; }
 
-  private makeTarget(w: number, h: number, format: number, name: string) {
+  private makeTarget(w: number, h: number, format: number, name: string, filter: number = pc.FILTER_NEAREST) {
     const tex = new pc.Texture(this.device, {
       name, width: w, height: h, format, mipmaps: false,
-      minFilter: pc.FILTER_NEAREST, magFilter: pc.FILTER_NEAREST,
+      minFilter: filter, magFilter: filter,
       addressU: pc.ADDRESS_CLAMP_TO_EDGE, addressV: pc.ADDRESS_CLAMP_TO_EDGE,
     });
     return { tex, rt: new pc.RenderTarget({ colorBuffer: tex, depth: false, name }) };
@@ -190,7 +210,7 @@ export class DofRenderer {
     this.sceneRT?.destroy();
     this.sceneRT?.colorBuffer?.destroy();
     for (const a of this.accum) { a.rt.destroy(); a.tex.destroy(); }
-    const scene = this.makeTarget(w, h, pc.PIXELFORMAT_RGBA16F, 'splatcam-scene');
+    const scene = this.makeTarget(w, h, pc.PIXELFORMAT_RGBA16F, 'splatcam-scene', pc.FILTER_LINEAR);
     this.sceneRT = scene.rt;
     this.accum = [0, 1].map((i) => this.makeTarget(w, h, pc.PIXELFORMAT_RGBA32F, `splatcam-accum-${i}`));
     this.w = w; this.h = h; this.count = 0; this.cur = 0;
@@ -239,6 +259,9 @@ export class DofRenderer {
 
     // Éléments diagonaux de la projection (setPerspective, fov vertical) : P11 = 1/tan(fov/2), P00 = P11/aspect.
     const p11 = 1 / Math.tan((lens.fovV * Math.PI) / 360), p00 = p11 / lens.aspect;
+    // Tilt : gradient τ du plan de netteté, en 1 / unité de scène (la focale est convertie en unités de scène).
+    const tilted = isTilted(lens.tiltDeg);
+    const tau = tiltGradient(lens.tiltDeg, lens.focalMm / 1000 / mpu);
 
     this.inSubRender = true;
     for (let i = 0; i < budget; i++) {
@@ -253,6 +276,11 @@ export class DofRenderer {
         shearTerm(ox, p00, focusU) + lens.shiftNdc.x,
         shearTerm(oy, p11, focusU) + lens.shiftNdc.y,
       );
+      this.warp = {
+        on: tilted,
+        m: tilted ? tiltWarp([ox, oy], tau) : [1, 0, 0, 1],
+        proj: [p00, p11, lens.shiftNdc.x, lens.shiftNdc.y],
+      };
       this.presentNow = i === budget - 1;
       this.app.render();
     }
@@ -271,7 +299,9 @@ export class DofRenderer {
     const ap = this.lens!.aperture;
     scope.resolve('uSample').setValue(this.cur_u);
     scope.resolve('uShape').setValue([ap.blades, ap.roundness, (ap.rotationDeg * Math.PI) / 180, ap.catEye]);
-    scope.resolve('uField').setValue([(ap.swirlDeg * Math.PI) / 180, this.lens!.aspect, this.count === 0 ? 1 : 0, 0]);
+    scope.resolve('uField').setValue([(ap.swirlDeg * Math.PI) / 180, this.lens!.aspect, this.count === 0 ? 1 : 0, this.warp.on ? 1 : 0]);
+    scope.resolve('uWarp').setValue(this.warp.m);
+    scope.resolve('uProj').setValue(this.warp.proj);
     pc.drawQuadWithShader(this.device, next.rt, this.accumShader);
     this.cur = 1 - this.cur;
     this.count++;

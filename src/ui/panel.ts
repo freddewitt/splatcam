@@ -20,6 +20,9 @@ export interface PanelState {
   /** Shift de l'objectif sur le capteur, mm (x droite, y haut). */
   shiftX: number;
   shiftY: number;
+  /** Tilt (y) et swing (x) de l'objectif, degrés. */
+  tiltX: number;
+  tiltY: number;
   /** Preset d'objectif appliqué en dernier ('' = réglage manuel). */
   presetId: string;
 }
@@ -104,6 +107,8 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
       state.aperture = presetAperture(p);
       state.shiftX = p.shiftMm?.x ?? 0;
       state.shiftY = p.shiftMm?.y ?? 0;
+      state.tiltX = p.tiltDeg?.x ?? 0;
+      state.tiltY = p.tiltDeg?.y ?? 0;
     }
     sync();
     onChange();
@@ -144,6 +149,10 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     slider('Shift horizontal (mm)', -20, 20, 0.5, () => state.shiftX, (v) => { state.shiftX = v; }),
     slider('Shift vertical (mm)', -20, 20, 0.5, () => state.shiftY, (v) => { state.shiftY = v; }),
   ];
+  const tilt = [
+    slider('Tilt (° ; + = netteté plus proche en bas)', -10, 10, 0.1, () => state.tiltY, (v) => { state.tiltY = v; }),
+    slider('Swing (° ; + = netteté plus proche à droite)', -10, 10, 0.1, () => state.tiltX, (v) => { state.tiltX = v; }),
+  ];
   const title = (t: string) => el('div', { class: 'sep' }, t);
 
   const readout = el('div', { class: 'readout' });
@@ -166,6 +175,8 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     ...bokeh,
     title('Shift'),
     ...shift,
+    title('Tilt (Scheimpflug)'),
+    ...tilt,
     readout,
   );
 

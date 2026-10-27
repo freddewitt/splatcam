@@ -16,5 +16,7 @@
   { "id": "anamorphique", "name": "Anamorphique 2x", "focalMm": 40, "fNumber": 2.8,
     "aperture": { "squeeze": 2, "sphericalAberration": -0.2, "catEye": 0.3 } },
   { "id": "shift", "name": "Shift architecture (24 mm, +10 mm)", "focalMm": 24, "fNumber": 8,
-    "shiftMm": { "x": 0, "y": 10 }, "aperture": {} }
+    "shiftMm": { "x": 0, "y": 10 }, "aperture": {} },
+  { "id": "tilt-sol", "name": "Tilt sol (50 mm, f/2, tilt 6°)", "focalMm": 50, "fNumber": 2,
+    "tiltDeg": { "x": 0, "y": 6 }, "aperture": {} }
 ]

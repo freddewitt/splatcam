@@ -37,5 +37,17 @@
 - Capture : `docs/captures/M2.png` (mire, panneau masqué). Réglages : Full Frame 24×36, 50 mm, f/1.4, map 2 m, échelle 1 m/unité, 1024 éch., caméra à l'origine regardant −Z (`orbits.*.target=(0,0,−1), dist=1, yaw=0, pitch=0`).
 - Prochaine étape : M3 (formes d'ouverture, lames, anneaux, cat-eye, swirl, aberration sphérique, anamorphique, tilt/shift Scheimpflug, presets d'objectif JSON), en remplaçant `diskSample` par une distribution paramétrable.
 
-## M3 à M8, M7bis
+## M3. Bokeh et tilt/shift
+- Statut : validé
+- Date : 2026-10-27
+- Commit : voir `git log` (commits « M3 (partiel) : … » puis « M3 : tilt Scheimpflug … »)
+- Ce qui marche : formes d'ouverture (disque, polygone à N lames, arrondi, rotation), anneaux (onion rings), aberration sphérique, cat-eye, swirl, squeeze anamorphique (`src/optics/aperture.ts` + miroir WGSL dans `dof-renderer.ts`), shift (frustum asymétrique), tilt / swing Scheimpflug (`src/optics/tilt.ts`), presets d'objectif JSON (`src/presets/lenses.json`, champ `tiltDeg` ajouté), panneau étendu. 48 tests Vitest verts.
+- Tilt (option A, post-warp) : pour un plan de netteté incliné, la caméra décalée de `o` et cisaillée pour le plan perpendiculaire voit les points du plan incliné décalés de façon LINÉAIRE : v' = (I − o·τᵀ)·v (τ = sin θ / f). Chaque sous-rendu est relu avec cette matrice dans la passe d'accumulation (texture de scène en filtrage bilinéaire). Le picking calcule la distance d'axe pour que le plan passe par le point cliqué.
+- Validation tilt (`tools/make-tilt-grid.mjs` → `samples/tilt-grid.ply`, 45 points posés sur le plan de netteté d'un tilt de 3°, de 1,4 m en bas à 3,6 m en haut) : sans tilt, les rangées du haut et du bas sont de gros disques (`docs/captures/M3-sans-tilt.png`) ; avec tilt +3°, les 45 points sont nets et identiques (`docs/captures/M3.png`). Picking : clic sur trois points du plan → 2,000 / 2,000 / 1,999 m (le même plan).
+- Approximatif : bords de l'image relus avec clamp (pas de sur-balayage, décalage de l'ordre de quelques pixels), léger flou bilinéaire avec tilt actif. Interaction tilt + shift simplifiée (plan défini dans le repère de la caméra, charnière non déplacée par le shift). Les anneaux ne sont pas résolus à 384 éch. ; swirl nul sur disque pur ; arrondi des lames = mélange polygone / cercle (non physique). Preset `tilt-sol` non testé à l'écran. Pas de capture dédiée au bokeh (vérifié à l'écran : disque, hexagone, cat-eye, swirl, anamorphique 2x).
+- Décisions non évidentes : voir `docs/gotchas.md` (masque d'ouverture, shift + picking, tilt = warp linéaire).
+- Capture : `docs/captures/M3.png`. Réglages : Full Frame 24×36, 50 mm, f/1.4, map 2 m, échelle 1 m/unité, tilt +3° (swing 0), 128 éch., caméra à l'origine regardant −Z (`orbits.shoot.target=(0,0,−1), dist=1, yaw=0, pitch=0`).
+- Prochaine étape : M4 (timeline de plan : pistes caméra / map / zoom, courbes bézier, mode enregistrement).
+
+## M4 à M8, M7bis
 - Statut : à faire

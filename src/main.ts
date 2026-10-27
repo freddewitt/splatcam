@@ -4,6 +4,7 @@ import { createPanel, type PanelState } from './ui/panel';
 import { DofRenderer } from './render/dof-renderer';
 import { pickDepth, type PickData } from './render/pick';
 import { DEFAULT_APERTURE } from './optics/aperture';
+import { focusThroughPoint, tiltGradient } from './optics/tilt';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -24,7 +25,7 @@ window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); })
 
 // État réglable depuis le panneau.
 const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
-  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, presetId: '' };
+  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, presetId: '' };
 
 // Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
 app.autoRender = false;
@@ -84,6 +85,7 @@ function applyCameras() {
       aperture: state.aperture,
       // Shift : 2 · mm / taille du capteur = décalage du cadre en NDC (P02 / P12 = +2s/W : le cadre monte avec le shift).
       shiftNdc: { x: (2 * state.shiftX) / sensor.width, y: (2 * state.shiftY) / sensor.height },
+      tiltDeg: { x: state.tiltX, y: state.tiltY },
     });
   } else {
     dof.detach();
@@ -172,7 +174,11 @@ function focusAt(clientX: number, clientY: number) {
   const tolAngle = (3 * 2) / (r.h * p11); // ≈ 3 px d'angle
   const z = pickDepth(pickData, [pos.x, pos.y, pos.z], [fwd.x, fwd.y, fwd.z], [dir.x, dir.y, dir.z], tolAngle);
   if (z === null) return;
-  state.focusM = z * state.metersPerUnit;
+  // Plan de netteté incliné : il doit passer par le point visé (pas seulement couper l'axe à sa profondeur).
+  const tau = tiltGradient(lens.tiltDeg, lens.focalMm / 1000 / state.metersPerUnit);
+  const d = focusThroughPoint(z, [local.x * z / -local.z, local.y * z / -local.z], tau);
+  if (d === null) return;
+  state.focusM = d * state.metersPerUnit;
   panel.sync();
   applyCameras();
 }

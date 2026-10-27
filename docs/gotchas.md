@@ -9,6 +9,7 @@
 - Dans les passes plein écran maison, `uv0.y` croît vers le BAS de l'image (ligne 0 = haut) : pour une position de champ « haut = +y » (cat-eye, swirl), inverser y.
 - Masque d'ouverture par pixel (cat-eye, swirl, lames) : l'accumulateur SOMME les échantillons acceptés, l'affichage divise par le nombre d'échantillons × l'acceptation au centre (les lames ne doivent pas assombrir, le cat-eye doit vignetter). Le miroir CPU `apertureMask` (optics/aperture.ts) et le WGSL doivent rester alignés.
 - Shift d'objectif = `projectionOffset` additionné au cisaillement d'ouverture (ndc = p·x/(−z) − P02) ; le picking doit ajouter ce décalage au rayon (x/(−z) = (ndc + P02)/p).
+- Tilt (Scheimpflug) : la caméra décalée cisaillée pour z = −d voit le plan incliné z = −d + d·τ·(x, y) transformé LINÉAIREMENT : v' = (I − o·τᵀ)·v (`optics/tilt.ts`). On relit donc le sous-rendu avec cette matrice (texture de scène en LINEAR ; v = (ndc + shift)/P, ndc_y vers le haut, uv0.y vers le bas). `d` s'annule : τ = sin θ / f suffit. Un clic de mise au point doit viser le plan (`focusThroughPoint`), pas seulement la profondeur.
 - Picking : seules les données PLY brutes (`resource.gsplatData.getProp`) donnent opacité et échelle ; SOG / SPZ / compressé → centres seuls.
 
 ## Optique
