@@ -121,6 +121,7 @@
 - Prochaine étape : M8 (projet JSON, raccourcis clavier, interface mobile en HTTPS local, pilotage depuis le téléphone).
 
 ## M8. Confort
+- Commits : lot 1 f6ff3a7, lot 2 fc60455.
 - Statut : en cours (lots 1 et 2 livrés ; validation à l'œil sur un vrai téléphone en attente)
 - Décisions (2026-10-27) : téléphone = télécommande du Mac par relais WebSocket local dans le serveur Vite (le Mac fait le rendu) ; scène du projet = référence par nom (on la redépose), LUT et masque de saleté idem.
 - Lot 1, projet JSON : `src/project/project.ts` (pur, 9 tests) : format `splatcam-project` v1, réglages + orbites explore / shoot + plan, graine de bruit exclue, chaque champ validé contre les valeurs par défaut (types, identifiants connus, bornes), version future refusée. Boutons Enregistrer / Ouvrir (`src/ui/project-ui.ts`, File System Access sinon téléchargement), dépôt d'un .json sur la fenêtre, Ctrl/Cmd S / O. Ouvrir un projet avant sa scène : la pose du projet est gardée quand on dépose la scène du même nom.
