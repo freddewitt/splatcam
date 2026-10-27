@@ -3,6 +3,8 @@ import type { ApertureShape } from '../optics/aperture';
 import { FOCUS_MARKS, FOCUS_MIN_M, dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } from '../timeline/shot';
 import { parseCube, type Lut3D } from '../optics/lut';
 import type { PostParams, ToneMap } from '../render/post';
+import { FILM_STOCKS, getStock, type FilmStock } from '../optics/film-stock';
+import { LUT_INPUT_LABELS, type LutInput } from '../optics/log-gamut';
 import { LENS_PRESETS, getPreset, presetAperture } from '../optics/lens-preset';
 
 export type Mode = 'explore' | 'shoot';
@@ -55,7 +57,7 @@ const el = <T extends HTMLElement>(tag: string, attrs: Record<string, string> = 
 
 /** Panneau de contrôle HTML : mode, capteur, focale, échelle, lecture du champ de vision. */
 /** Rappels de l'interface vers le rendu : paramètres de post modifiés (sans refaire les sous-rendus), look chargé. */
-export interface PanelHooks { post(): void; lut(lut: Lut3D | null): void }
+export interface PanelHooks { post(): void; lut(lut: Lut3D | null): void; stock(stock: FilmStock | null): void }
 
 export function createPanel(state: PanelState, onChange: () => void, hooks: PanelHooks): Panel {
   const root = document.getElementById('panel')!;
@@ -202,6 +204,26 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   const toneSel = el<HTMLSelectElement>('select');
   for (const [v, l] of [['aces', 'ACES (cinéma)'], ['reinhard', 'Reinhard'], ['none', 'Aucun (écrêté)']] as const) toneSel.append(el<HTMLOptionElement>('option', { value: v }, l));
   toneSel.addEventListener('change', () => { state.post = { ...state.post, toneMap: toneSel.value as ToneMap }; hooks.post(); });
+  // Émulsion : choisir copie aussi ses réglages de grain et de halation dans les curseurs (modifiables ensuite).
+  const stockSel = el<HTMLSelectElement>('select');
+  stockSel.append(el<HTMLOptionElement>('option', { value: '' }, 'Aucune (tone mapping seul)'));
+  for (const s of FILM_STOCKS) stockSel.append(el<HTMLOptionElement>('option', { value: s.id, title: s.description }, s.name));
+  stockSel.addEventListener('change', () => {
+    const s = getStock(stockSel.value) ?? null;
+    const next: PostParams = { ...state.post, stock: stockSel.value };
+    if (s) {
+      next.grain = s.grain?.amount ?? 0; next.grainSize = s.grain?.size ?? 1.5;
+      next.halation = s.halation?.amount ?? 0; next.halationThreshold = s.halation?.threshold ?? 1;
+      next.halationTint = s.halation?.tint ?? [1, 0.3, 0.1];
+    }
+    state.post = next;
+    hooks.stock(s);
+    sync();
+    hooks.post();
+  });
+  const lutInputSel = el<HTMLSelectElement>('select');
+  for (const [v, l] of Object.entries(LUT_INPUT_LABELS)) lutInputSel.append(el<HTMLOptionElement>('option', { value: v }, l));
+  lutInputSel.addEventListener('change', () => { state.post = { ...state.post, lutInput: lutInputSel.value as LutInput }; hooks.post(); });
   const isoSel = el<HTMLSelectElement>('select');
   for (const v of [0, 100, 200, 400, 800, 1600, 3200, 6400, 12800]) isoSel.append(el<HTMLOptionElement>('option', { value: String(v) }, v === 0 ? 'Aucun bruit' : `ISO ${v}`));
   isoSel.addEventListener('change', () => { state.post = { ...state.post, iso: parseInt(isoSel.value, 10) }; hooks.post(); });
@@ -225,13 +247,15 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   const lutClear = el<HTMLButtonElement>('button', { type: 'button' }, 'Retirer le look');
   lutClear.addEventListener('click', () => { hooks.lut(null); state.lutName = ''; lutFile.value = ''; sync(); hooks.post(); });
   const film = [
-    field2('Tone mapping', toneSel),
+    field2('Émulsion', stockSel),
+    field2('Tone mapping (sans émulsion)', toneSel),
     post('Exposition (EV)', 'exposureEv', -4, 4, 0.1),
     post('Gain hautes lumières', 'highlightGain', 1, 8, 0.1, (v) => `×${v.toFixed(1)}`),
     post('Bloom', 'bloom', 0, 1, 0.01),
     post('Bloom : seuil', 'bloomThreshold', 0.2, 4, 0.05),
     post('Bloom : étendue', 'bloomRadius', 0.3, 0.8, 0.01),
     post('Halation', 'halation', 0, 1, 0.01),
+    post('Halation : seuil', 'halationThreshold', 0.5, 3, 0.05),
     post('Vignettage naturel (cos⁴)', 'vignetteNatural', 0, 1, 0.01),
     post('Vignettage optique', 'vignetteOptical', 0, 1, 0.01),
     post('Distorsion (+ barillet, − coussinet)', 'distortion', -0.3, 0.3, 0.005),
@@ -241,7 +265,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     post('Taille du grain (px)', 'grainSize', 0.8, 4, 0.1),
   ];
   const lutRow = el('div', { class: 'field' });
-  lutRow.append(el('span', {}, 'Look (.cube)'), lutName, lutFile, lutClear);
+  lutRow.append(el('span', {}, 'Look (.cube)'), lutName, lutFile, el('span', {}, 'Entrée attendue par la LUT'), lutInputSel, lutClear);
   const lutAmount = post('Intensité du look', 'lutAmount', 0, 1, 0.01);
   const title = (t: string) => el('div', { class: 'sep' }, t);
 
@@ -291,6 +315,8 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     samples.value = String(state.samples);
     fpsSel.value = String(state.fps);
     toneSel.value = state.post.toneMap;
+    stockSel.value = state.post.stock;
+    lutInputSel.value = state.post.lutInput;
     isoSel.value = String(state.post.iso);
     lutName.textContent = state.lutName || 'aucun';
     ring.value = String(dioptersFromMeters(state.focusM));

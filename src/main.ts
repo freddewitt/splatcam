@@ -109,6 +109,7 @@ const dof = new DofRenderer(app, shoot);
 const panel = createPanel(state, applyCameras, {
   post: () => dof.setPost(state.post),
   lut: (lut) => dof.postProcessor.setLut(lut),
+  stock: (s) => dof.postProcessor.setStock(s),
 });
 dof.postParams = state.post;
 applyCameras();

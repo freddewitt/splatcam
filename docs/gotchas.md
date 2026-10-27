@@ -38,6 +38,9 @@
 - Distorsion : la sortie au rayon r lit la source à r·(1 + k1·r²)/fit, coin = 1 (aspect inclus) ; fit = max(1, 1 + k1) garde le coin de la source en barillet.
 - Bruit : graine = numéro d'image (`state.post.seed = floor(t·fps)`) → déterministe. Écart-type du bruit mesuré avec écrêtage à 0 dans les noirs (la moyenne remonte, c'est attendu).
 - LUT : bande RGBA32F `atlasWidth(N)` × N² lue en `textureLoad` avec interpolation trilinéaire maison ; appliquée après sRGB. Attention en test : les réglages de post PERSISTENT entre deux captures (`reset=false`) : un « gain ×4 » resté actif fausse la mesure d'une LUT.
+- Émulsion : `filmLook` (TS, testé) et le WGSL doivent rester alignés (mesuré ≤ 2,3/255 sur `samples/ramp.ply`). La luminance par secteur de teinte est pondérée par la saturation : sinon un gris pur (teinte 0 = rouge) est éclairci.
+- LUT constructeur : elles attendent la scène en log DANS le gamut caméra : Rec.709 → matrice → F-Log2 → LUT (`lutInput`). Même LUT en entrée « Image affichée » = couleurs fausses. LUT = RGBA32F, largeur arrondie à 16 texels.
+- Banc d'essai d'émulsions : `tools/make-ramp.mjs` (plaques à radiance connue, décodage gamma 2,2 du shader gsplat) ; patches lus en 9×9 px au centre ; positions déduites de la projection (px = 700 + X/(Z·0,36)·675).
 - Mesurer une zone de fond : choisir une fenêtre sans point lumineux (les grilles de test ont un point tous les ~170 px).
 
 ## Export
