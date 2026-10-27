@@ -1,5 +1,24 @@
+# Système et dépendances
 .DS_Store
 node_modules/
 dist/
+
+# Fichiers locaux et secrets
+.env*
+*.local
+
+# Caches et sorties d'outils
+.vite/
+coverage/
+*.log
+
+# Scènes de test : les grosses scènes restent locales,
+# les petites mires générées par tools/ sont suivies (les mesures de docs/avancement.md en dépendent)
 samples/*
 !samples/.gitkeep
+!samples/mire.ply
+!samples/bokeh-grid.ply
+!samples/tilt-grid.ply
+!samples/ramp.ply
+!samples/ramp.json
+

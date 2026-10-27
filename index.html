@@ -68,7 +68,7 @@
 
     /* ---------- Panneau latéral à onglets ---------- */
     #panel { position: fixed; top: var(--top-h); right: 0; bottom: 0; width: var(--side-w); z-index: 5; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); }
-    #panel .tabs { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line); }
+    #panel .tabs { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line); }
     #panel .tabs button { border: 0; background: transparent; color: var(--muted); padding: 7px 0 9px; cursor: pointer; display: grid; justify-items: center; gap: 3px; font-size: 10.5px; min-width: 0; border-bottom: 2px solid transparent; }
     #panel .tabs button svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
     #panel .tabs button:hover { color: var(--text); }
@@ -141,6 +141,10 @@
     .urow .btn:first-child { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .btn.x { width: 30px; padding: 0; color: var(--muted); }
     .sub .num { flex: 1; min-width: 0; }
+    .nudge { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: stretch; }
+    .nudge.two { grid-template-columns: 1fr 1fr; }
+    .nudge .btn { min-height: 34px; padding: 0 10px; white-space: nowrap; }
+    .nudge .num { min-width: 0; text-align: center; font: 13px var(--mono); }
     optgroup { color: var(--muted); font-style: normal; }
     optgroup option { color: var(--text); }
 

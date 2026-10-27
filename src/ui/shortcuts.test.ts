@@ -24,6 +24,8 @@ describe('raccourcis', () => {
     expect(findShortcut(ev('ArrowRight', { shiftKey: true }))?.label).toBe('1 seconde en avant');
     expect(findShortcut(ev('s', { metaKey: true }))?.label).toBe('Enregistrer le projet');
     expect(findShortcut(ev('o', { ctrlKey: true }))?.label).toBe('Ouvrir un projet');
+    expect(findShortcut(ev('P'))?.label).toBe('Focus peaking');
+    expect(findShortcut(ev('p', { altKey: true }))).toBeUndefined();
   });
 
   it('Ctrl/Cmd + R (recharger), S seul et Alt + lettre ne déclenchent rien', () => {
@@ -32,13 +34,22 @@ describe('raccourcis', () => {
     expect(findShortcut(ev('e', { altKey: true }))).toBeUndefined();
   });
 
+  it('Option + flèches place la scène, sans toucher au défilement de la timeline', () => {
+    expect(findShortcut(ev('ArrowUp', { altKey: true }))?.label).toBe('Monter la scène de 10 cm');
+    expect(findShortcut(ev('ArrowDown', { altKey: true, shiftKey: true }))?.label).toBe('Descendre la scène de 1 m');
+    expect(findShortcut(ev('ArrowRight', { altKey: true }))?.label).toBe('Tourner la scène de 15° (+)');
+    expect(findShortcut(ev('ArrowLeft', { altKey: true, shiftKey: true }))?.label).toBe('Tourner la scène de 90° (−)');
+    expect(findShortcut(ev('ArrowRight'))?.label).toBe('Image suivante');
+    expect(findShortcut(ev('ArrowUp'))).toBeUndefined();
+  });
+
   it('espace et suppr sont gérés ailleurs (aucune action ici)', () => {
     expect(findShortcut(ev(' '))).toBeUndefined();
     expect(findShortcut(ev('Delete'))).toBeUndefined();
   });
 
   it('aucune touche en double', () => {
-    const ids = SHORTCUTS.map((s) => `${s.mod ? 'M' : ''}${s.shift ? 'S' : ''}${s.key}`);
+    const ids = SHORTCUTS.map((s) => `${s.mod ? 'M' : ''}${s.alt ? 'A' : ''}${s.shift ? 'S' : ''}${s.key}`);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });

@@ -1,14 +1,15 @@
-// Panneau de réglages : six onglets (Caméra, Objectif, Mouvement, Image, Optique, Moniteur), groupes repliables.
+// Panneau de réglages : sept onglets (Caméra, Objectif, Mouvement, Image, Optique, Moniteur, Scène), groupes repliables.
 // Chaque réglage numérique = curseur + valeur modifiable au clavier ; double-clic sur le libellé = valeur par défaut ;
 // un point ambre signale un réglage qui s'écarte du défaut. Les échelles perceptives (focale, ouverture, map,
 // échantillons) sont logarithmiques ou en dioptries, comme sur une vraie caméra.
 
+import { DEFAULT_GRADE, gradeCoefs } from '../optics/grade';
 import { getSensor, rad2deg, sensorFov, SENSOR_FORMATS, type Fov } from '../optics/sensor';
 import { DEFAULT_APERTURE, type ApertureShape } from '../optics/aperture';
 import { dofLimits, hyperfocal } from '../optics/dof';
 import { FOCUS_MARKS, FOCUS_MIN_M, dioptersFromMeters, metersFromDiopters } from '../timeline/shot';
 import { parseCube, type Lut3D } from '../optics/lut';
-import { DEFAULT_POST, DIRT_SIZE, NO_AIDS, type DisplayAids, type PostParams, type ToneMap } from '../render/post';
+import { DEFAULT_POST, DIRT_SIZE, NO_AIDS, type DisplayAids, type PeakingColor, type PostParams, type ToneMap } from '../render/post';
 import { FILM_STOCKS, getStock, type FilmStock } from '../optics/film-stock';
 import { LENS_FAMILIES, LENS_PRESETS, getPreset, presetAperture, presetFocalLabel, presetHasFocal, presetPost } from '../optics/lens-preset';
 
@@ -17,6 +18,9 @@ export type Mode = 'explore' | 'shoot';
 /** Placement de la scène (modèle) dans le monde : translation (unités de scène), rotation (°, ordre X Y Z), échelle. */
 export interface SceneTransform { x: number; y: number; z: number; rx: number; ry: number; rz: number; scale: number }
 export const IDENTITY_TRANSFORM: SceneTransform = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, scale: 1 };
+
+/** Angle ramené dans ]−180, 180]. */
+export const wrapDeg = (a: number) => { const r = ((a % 360) + 360) % 360; return r > 180 ? r - 360 : r; };
 
 export interface PanelState {
   mode: Mode;
@@ -61,6 +65,8 @@ export interface Panel {
   show(fov: Fov, targetDistM: number, extra?: string): void;
   /** Reflète l'état (ex. après changement de mode au clavier, projet ouvert, télécommande). */
   sync(): void;
+  /** Active ou coupe le focus peaking (raccourci P). */
+  togglePeaking(): void;
 }
 
 /** Rappels de l'interface vers le rendu et l'application. */
@@ -116,6 +122,7 @@ const ICONS: Record<string, string> = {
   image: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 16l5-5 4 4 3-3 6 6"/>',
   optics: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
   monitor: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M7 8h3M7 8v3M17 13h-3M17 13v-3"/>',
+  scene: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
 };
 
 let uid = 0;
@@ -546,6 +553,14 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   const lut = filePicker('Look (.cube, LUT 3D Rec.709)', '.cube', () => state.lutName || 'aucun', async (f) => {
     try { hooks.lut(parseCube(await f.text())); state.lutName = f.name; } catch (e) { hooks.lut(null); state.lutName = ''; throw e; }
   }, () => { hooks.lut(null); state.lutName = ''; }, 'Retirer');
+  // Étalonnage : appliqué avant le look (LUT), la température agit sur l'image linéaire.
+  const signed = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
+  const HUES: [number, string][] = [[0, 'rouge'], [30, 'orange'], [55, 'jaune'], [120, 'vert'], [180, 'cyan'], [220, 'bleu'], [275, 'violet'], [320, 'magenta'], [360, 'rouge']];
+  const hueName = (v: number) => `${Math.round(v)}° ${HUES.reduce((a, b) => (Math.abs(b[0] - v) < Math.abs(a[0] - v) ? b : a))[1]}`;
+  const gradeReset = el('div', { class: 'ctl' });
+  const gradeResetBtn = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost' }, 'Réinitialiser l\'étalonnage');
+  gradeResetBtn.addEventListener('click', () => { Object.assign(state.post, DEFAULT_GRADE); sync(); hooks.post(); });
+  gradeReset.append(gradeResetBtn);
   const pageImage = [
     group('exposition', 'Exposition', [
       post('Exposition', 'exposureEv', -4, 4, 0.1, (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} EV`),
@@ -553,6 +568,22 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     ], true),
     group('rendu', 'Rendu et look', [stock.wrap, tone.wrap, lut, post('Intensité du look', 'lutAmount', 0, 1, 0.01, (v) => `${Math.round(v * 100)} %`)], true,
       () => getStock(state.post.stock)?.name ?? ''),
+    group('etalonnage', 'Étalonnage', [
+      post('Température', 'gradeTemp', -1, 1, 0.01, signed, 'Balance des blancs, avant la courbe : + chaud, − froid.'),
+      post('Teinte', 'gradeTint', -1, 1, 0.01, signed, '+ magenta, − vert.'),
+      post('Contraste', 'gradeContrast', 0.5, 2, 0.01, (v) => `×${v.toFixed(2)}`),
+      post('Saturation', 'gradeSaturation', 0, 2, 0.01, (v) => `${Math.round(v * 100)} %`),
+      post('Lift (noirs)', 'gradeLift', -0.25, 0.25, 0.005, signed),
+      post('Couleur des noirs', 'gradeLiftColor', 0, 1, 0.01, (v) => `${Math.round(v * 100)} %`),
+      post('Teinte des noirs', 'gradeLiftHue', 0, 360, 1, hueName),
+      post('Gamma (médiums)', 'gradeGamma', -1, 1, 0.01, signed),
+      post('Couleur des médiums', 'gradeGammaColor', 0, 1, 0.01, (v) => `${Math.round(v * 100)} %`),
+      post('Teinte des médiums', 'gradeGammaHue', 0, 360, 1, hueName),
+      post('Gain (blancs)', 'gradeGain', -1, 1, 0.01, (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} EV`),
+      post('Couleur des blancs', 'gradeGainColor', 0, 1, 0.01, (v) => `${Math.round(v * 100)} %`),
+      post('Teinte des blancs', 'gradeGainHue', 0, 360, 1, hueName),
+      gradeReset,
+    ], false, () => (gradeCoefs(state.post).active ? 'actif' : '')),
     group('grain', 'Grain et bruit', [iso.wrap, post('Grain', 'grain', 0, 1, 0.01), post('Taille du grain', 'grainSize', 0.8, 4, 0.1, (v) => `${v.toFixed(1)} px`)], false),
   ];
 
@@ -596,7 +627,14 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
 
   // ---------- Onglet Moniteur (aperçu, aides, scène) ----------
   // Aides et qualité : préférences d'écran, gardées dans le navigateur (hors projet, jamais dans l'export).
-  const aids: DisplayAids = (() => { try { return { ...NO_AIDS, ...JSON.parse(storage.get('splatcam.aids') ?? '{}') }; } catch { return { ...NO_AIDS }; } })();
+  const aids: DisplayAids = (() => {
+    try {
+      const saved = JSON.parse(storage.get('splatcam.aids') ?? '{}') as Partial<DisplayAids>;
+      // Ancien format : « peaking » était la force, 0 = désactivé.
+      if (saved.peakingOn === undefined && typeof saved.peaking === 'number') { saved.peakingOn = saved.peaking > 0; if (saved.peaking <= 0) saved.peaking = NO_AIDS.peaking; }
+      return { ...NO_AIDS, ...saved };
+    } catch { return { ...NO_AIDS }; }
+  })();
   const pushAids = () => { storage.set('splatcam.aids', JSON.stringify(aids)); hooks.aids?.(aids); };
   const aidSlider = (label: string, k: 'zebraLevel' | 'peaking' | 'maskOpacity', min: number, max: number, step: number, fmt: (v: number) => string, hint?: string) =>
     slider({ label, min, max, step, get: () => aids[k], set: (v) => { aids[k] = v; }, def: NO_AIDS[k], fmt, keepPreset: true, notify: pushAids, hint });
@@ -611,20 +649,43 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   });
   const mask = select('Masque de format', MASKS.map(([v, l]) => [String(v), l] as [string, string]), () => String(aids.maskAspect), (v) => { aids.maskAspect = parseFloat(v); pushAids(); sync(); });
   // Placement de la scène (modèle) : position, rotation, échelle, enregistrés avec le projet.
+  // Les rotations et l'échelle pivotent autour du centre du modèle (voir applySceneTransform).
   const st = state.sceneTransform;
-  const tf = (label: string, k: keyof SceneTransform, metric: boolean) => ({
-    label, step: metric ? 0.05 : 1, digits: metric ? 3 : 1,
-    get: () => st[k] * (metric ? state.metersPerUnit : 1),
-    set: (v: number) => { st[k] = metric ? v / state.metersPerUnit : v; onChange(); },
-  });
+  const moveSteps: [string, string][] = [['0.01', '1 cm'], ['0.1', '10 cm'], ['1', '1 m'], ['10', '10 m']];
+  const turnSteps: [string, string][] = [['1', '1°'], ['15', '15°'], ['90', '90°']];
+  let moveStep = storage.get('splatcam.moveStep') ?? '0.1';
+  let turnStep = storage.get('splatcam.turnStep') ?? '15';
+  const moveSeg = segmented('Pas de déplacement', moveSteps, () => moveStep, (v) => { moveStep = v; storage.set('splatcam.moveStep', v); });
+  const turnSeg = segmented('Pas de rotation', turnSteps, () => turnStep, (v) => { turnStep = v; storage.set('splatcam.turnStep', v); });
+  /** Ligne « [−] valeur [+] » : boutons au pas choisi, saisie directe au milieu. */
+  const nudge = (label: string, minus: string, plus: string, get: () => number, set: (v: number) => void, step: () => number, unit: string, digits: number) => {
+    const id = `ctl${uid++}`;
+    const wrap = el('div', { class: 'ctl' });
+    const row = el('div', { class: 'nudge' });
+    const bm = el<HTMLButtonElement>('button', { type: 'button', class: 'btn', title: minus }, `− ${minus}`);
+    const bp = el<HTMLButtonElement>('button', { type: 'button', class: 'btn', title: plus }, `${plus} +`);
+    const input = el<HTMLInputElement>('input', { type: 'number', class: 'num', id, step: 'any' });
+    const apply = (v: number) => { set(v); sync(); onChange(); };
+    bm.addEventListener('click', () => apply(get() - step()));
+    bp.addEventListener('click', () => apply(get() + step()));
+    input.addEventListener('change', () => { const v = parseFloat(input.value); if (Number.isFinite(v)) apply(v); else sync(); });
+    syncers.push(() => { if (document.activeElement !== input) input.value = String(+get().toFixed(digits)); });
+    row.append(bm, input, bp);
+    wrap.append(head(`${label} (${unit})`, id, el('span')), row);
+    return wrap;
+  };
+  const mpu = () => state.metersPerUnit;
+  const move = (label: string, k: 'x' | 'y' | 'z', minus: string, plus: string) =>
+    nudge(label, minus, plus, () => st[k] * mpu(), (v) => { st[k] = v / mpu(); }, () => parseFloat(moveStep), 'm', 3);
+  const turn = (label: string, k: 'rx' | 'ry' | 'rz', minus: string, plus: string) =>
+    nudge(label, minus, plus, () => st[k], (v) => { st[k] = wrapDeg(v); }, () => parseFloat(turnStep), '°', 1);
   const scaleSl = slider({ label: 'Échelle du modèle', min: Math.log(0.01), max: Math.log(100), step: 0.001, get: () => st.scale, set: (v) => { st.scale = v; }, def: 1,
     to: Math.log, from: Math.exp, lo: 0.001, hi: 1000, round: (v) => Math.round(v * 1000) / 1000, fmt: (v) => `×${+v.toFixed(3)}`, keepPreset: true, ticks: [[0.1, '×0.1'], [1, '×1'], [10, '×10']] });
-  const rotSl = (label: string, k: 'rx' | 'ry' | 'rz') => slider({ label, min: -180, max: 180, step: 1, get: () => st[k], set: (v) => { st[k] = v; }, def: 0, fmt: (v) => `${+v.toFixed(1)}°`, keepPreset: true });
   const resetTf = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost' }, 'Remettre à zéro');
   resetTf.addEventListener('click', () => { Object.assign(st, IDENTITY_TRANSFORM); sync(); onChange(); });
-  const flip = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost', title: 'Beaucoup de scènes exportées sont à l\'envers (axe Y vers le bas)' }, 'Retourner (X 180°)');
-  flip.addEventListener('click', () => { st.rx = st.rx >= 0 ? st.rx - 180 : st.rx + 180; sync(); onChange(); });
-  const tfRow = el('div', { class: 'sub' }); tfRow.append(flip, resetTf);
+  const flip = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost', title: 'Beaucoup de scènes exportées sont à l\'envers (axe Y vers le bas)' }, 'Retourner (à l\'envers)');
+  flip.addEventListener('click', () => { st.rx = wrapDeg(st.rx + 180); sync(); onChange(); });
+  const tfRow = el('div', { class: 'ctl' }); const tfBtns = el('div', { class: 'nudge two' }); tfBtns.append(flip, resetTf); tfRow.append(tfBtns);
   const scale = el<HTMLInputElement>('input', { type: 'number', class: 'num', min: '0.0001', step: '0.01', id: `ctl${uid++}` });
   scale.addEventListener('change', () => {
     const v = parseFloat(scale.value);
@@ -638,18 +699,38 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     group('aides', 'Aides à l\'exposition et au point', [
       toggle('Zébras (surexposition)', () => aids.zebra, (v) => { aids.zebra = v; pushAids(); }),
       aidSlider('Seuil des zébras', 'zebraLevel', 0.7, 1, 0.01, (v) => `${Math.round(v * 100)} %`),
-      aidSlider('Focus peaking', 'peaking', 0, 2, 0.05, (v) => (v === 0 ? 'désactivé' : `×${v.toFixed(2)}`), 'Surligne en rouge les détails nets.'),
-    ], true, () => (aids.zebra || aids.peaking > 0 ? 'actif' : '')),
+      toggle('Focus peaking (P)', () => aids.peakingOn, (v) => { aids.peakingOn = v; pushAids(); }),
+      aidSlider('Sensibilité du peaking', 'peaking', 0.25, 3, 0.05, (v) => `×${v.toFixed(2)}`, 'Surligne les détails nets. Plus haut : des détails moins contrastés s\'allument aussi. À vérifier une fois l\'aperçu affiné.'),
+      segmented('Couleur du peaking', [['red', 'Rouge'], ['green', 'Vert'], ['blue', 'Bleu'], ['yellow', 'Jaune'], ['white', 'Blanc']],
+        () => aids.peakingColor, (v) => { aids.peakingColor = v as PeakingColor; pushAids(); }),
+      toggle('Image en noir et blanc sous le peaking', () => aids.peakingMono, (v) => { aids.peakingMono = v; pushAids(); }),
+    ], true, () => (aids.zebra || aids.peakingOn ? 'actif' : '')),
     group('cadrage', 'Repères de cadrage', [
       toggle('Tiers', () => aids.thirds, (v) => { aids.thirds = v; pushAids(); }),
       toggle('Zones de sécurité (93 / 90 %)', () => aids.safe, (v) => { aids.safe = v; pushAids(); }),
       toggle('Croix centrale', () => aids.center, (v) => { aids.center = v; pushAids(); }),
       mask.wrap, aidSlider('Opacité du masque', 'maskOpacity', 0, 1, 0.05, (v) => `${Math.round(v * 100)} %`),
     ], true, () => (aids.thirds || aids.safe || aids.center || aids.maskAspect ? 'actif' : '')),
-    group('placement', 'Placement de la scène', [
-      numGrid([tf('X (m)', 'x', true), tf('Y (m)', 'y', true), tf('Z (m)', 'z', true)]),
-      rotSl('Rotation X', 'rx'), rotSl('Rotation Y', 'ry'), rotSl('Rotation Z', 'rz'), scaleSl, tfRow, scaleCtl,
-    ], false, () => (st.x || st.y || st.z || st.rx || st.ry || st.rz || st.scale !== 1 ? 'modifié' : '')),
+  ];
+  const moved = () => (st.x || st.y || st.z ? 'modifié' : '');
+  const turned = () => (st.rx || st.ry || st.rz ? 'modifié' : '');
+  const pageScene = [
+    group('scene-move', 'Déplacer la scène', [
+      moveSeg,
+      move('Haut / bas', 'y', 'Bas', 'Haut'),
+      move('Axe X', 'x', 'X', 'X'),
+      move('Axe Z', 'z', 'Z', 'Z'),
+      el('div', { class: 'hint' }, 'Raccourcis : ⌥ ↑ / ⌥ ↓ (10 cm), avec Maj : 1 m.'),
+    ], true, moved),
+    group('scene-turn', 'Tourner la scène', [
+      turnSeg,
+      turn('Autour de la verticale (Y)', 'ry', 'Y', 'Y'),
+      turn('Basculer (X)', 'rx', 'X', 'X'),
+      turn('Pencher (Z)', 'rz', 'Z', 'Z'),
+      tfRow,
+      el('div', { class: 'hint' }, 'La scène tourne sur son centre. Raccourcis : ⌥ ← / ⌥ → (15°), avec Maj : 90°.'),
+    ], true, turned),
+    group('scene-scale', 'Échelle', [scaleSl, scaleCtl], false, () => (st.scale !== 1 ? 'modifié' : '')),
   ];
 
   // ---------- Onglets ----------
@@ -660,6 +741,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     ['image', 'Image', ICONS.image, pageImage],
     ['optics', 'Optique', ICONS.optics, pageOptics],
     ['monitor', 'Moniteur', ICONS.monitor, pageMonitor],
+    ['scene', 'Scène', ICONS.scene, pageScene],
   ];
   const tabs = el('div', { class: 'tabs', role: 'tablist' });
   const holder = el('div', { class: 'pages' });
@@ -713,6 +795,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
 
   return {
     sync,
+    togglePeaking() { aids.peakingOn = !aids.peakingOn; pushAids(); sync(); },
     show(fov, targetDistM, extra = '') {
       const d = (r: number) => `${rad2deg(r).toFixed(1)}°`;
       readout.textContent = `Champ H    ${d(fov.h)}\nChamp V    ${d(fov.v)}\nDiagonale  ${d(fov.d)}\nCible à    ${targetDistM.toFixed(2)} m${extra ? '\n' + extra : ''}`;

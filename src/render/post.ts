@@ -1,7 +1,8 @@
 // Chaîne optique et pellicule appliquée à l'image accumulée (HDR linéaire), puis sortie écran.
 // Ordre : accumulation → exposition et gain des hautes lumières → bloom / halation →
 // distorsion, aberration chromatique, vignettage → bruit capteur (ISO) et grain → tone mapping →
-// sRGB → look (LUT .cube).
+// sRGB → étalonnage (lift/gamma/gain, contraste, saturation) → look (LUT .cube). La balance des blancs de
+// l'étalonnage agit avant le tone mapping, sur l'image linéaire.
 //
 // Passes : (0) source RGBA16F ; deux pyramides de flou (6 niveaux, filtre « dual » : 5 prises à la descente,
 // 8 à la montée, seuil doux au premier niveau) : une pour le bloom (seuil et étendue propres), une pour la
@@ -16,12 +17,14 @@
 import * as pc from 'playcanvas';
 import { atlasWidth, lutToAtlas, type Lut3D } from '../optics/lut';
 import { stockUniforms, type FilmStock } from '../optics/film-stock';
+import { CONTRAST_PIVOT, DEFAULT_GRADE, gradeCoefs, type GradeParams } from '../optics/grade';
 import { GHOSTS, generateDirt, starFirstAngle, starSpikeCount, streakMix } from '../optics/flare';
 
 export type ToneMap = 'none' | 'reinhard' | 'aces';
 const TONE_ID: Record<ToneMap, number> = { none: 0, reinhard: 1, aces: 2 };
 
-export interface PostParams {
+/** Réglages de post ; l'étalonnage (GradeParams, optics/grade.ts) en fait partie. */
+export interface PostParams extends GradeParams {
   /** Exposition en diaphragmes (EV) ; multiplie l'image linéaire par 2^EV. */
   exposureEv: number;
   /** Gain des hautes lumières (1 = aucun) : fait dépasser 1,0 aux zones claires pour le bloom. */
@@ -77,6 +80,7 @@ export const DEFAULT_POST: PostParams = {
   streak: 0, streakLength: 0.7, streakTint: [0.35, 0.55, 1], ghosts: 0, ghostCount: 4, dirt: 0,
   vignetteNatural: 0, vignetteOptical: 0, distortion: 0, chromaticAberration: 0,
   iso: 0, grain: 0, grainSize: 1.5, lutAmount: 1, stock: '', seed: 0,
+  ...DEFAULT_GRADE,
 };
 
 const LEVELS = 6;
@@ -360,9 +364,16 @@ uniform uLumB: vec4f;
 uniform uSplitS: vec4f;   // dominante des ombres
 uniform uSplitH: vec4f;   // dominante des hautes lumières, w = 1 : émulsion active
 uniform uMono: vec4f;     // poids R V B, w = 1 : monochrome
+// Étalonnage (voir optics/grade.ts, gradeCoefs) : w de uGrade = 1 si actif.
+uniform uWb: vec4f;       // gains de balance des blancs R V B (scène-linéaire)
+uniform uLift: vec4f;     // sortie du noir R V B
+uniform uGamma: vec4f;    // exposant des médiums R V B
+uniform uGain: vec4f;     // sortie du blanc R V B
+uniform uGrade: vec4f;    // contraste, saturation, pivot, 1 = actif
 // Aides à l'écran (jamais dans l'export) : zébras, peaking, repères de cadrage.
 uniform uAid: vec4f;      // 1 = zébras, seuil des zébras (valeur affichée), force du peaking (0 = aucun), repères (bits : 1 tiers, 2 zones de sécurité, 4 centre)
 uniform uAid2: vec4f;     // rapport du masque de format (0 = aucun), opacité du masque, rapport du cadre
+uniform uAid3: vec4f;     // couleur du peaking (rgb), w = 1 : image en noir et blanc sous le peaking
 varying uv0: vec2f;
 
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
@@ -476,6 +487,16 @@ fn filmLook(col: vec3f) -> vec3f {
   return clamp(c, vec3f(0.0), vec3f(1.0));
 }
 
+// --- étalonnage de l'image affichée (miroir de applyGrade, optics/grade.ts) ---
+// y = gain·x + lift·(1 − x), puis y^(1/gamma), contraste autour du pivot, saturation autour de la luminance.
+fn grade(c: vec3f) -> vec3f {
+  var y = max(uniform.uGain.xyz * c + uniform.uLift.xyz * (1.0 - c), vec3f(0.0));
+  y = pow(y, 1.0 / uniform.uGamma.xyz);
+  y = uniform.uGrade.z + (y - uniform.uGrade.z) * uniform.uGrade.x;
+  let l = dot(y, LUMA);
+  return clamp(vec3f(l) + (y - vec3f(l)) * uniform.uGrade.y, vec3f(0.0), vec3f(1.0));
+}
+
 fn lutAt(r: i32, g: i32, b: i32, n: i32) -> vec3f { return textureLoad(lutTex, vec2i(r, g + b * n), 0).rgb; }
 
 // Interpolation trilinéaire dans la bande (N × N²) : miroir de applyLut (optics/lut.ts).
@@ -531,10 +552,16 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
     col.b += gauss(px, seed, 2u) * uniform.uD.x * sqrt(0.18 * (max(col.b, 0.0) + 0.01));
   }
 
+  // Balance des blancs (étalonnage) : gains par canal sur l'image linéaire, avant la courbe.
+  if (uniform.uGrade.w > 0.5) { col = col * uniform.uWb.xyz; }
+
   // Émulsion (courbes par canal + couleur) ou tone mapping, puis encodage affichage.
   var o: vec3f;
   if (uniform.uSplitH.w > 0.5) { o = filmLook(col); }               // l'émulsion produit déjà une valeur affichée
   else { o = srgbOetf(toneMap(col, uniform.uE.x)); }
+
+  // Étalonnage de l'image affichée, avant le look : il « nourrit » la LUT.
+  if (uniform.uGrade.w > 0.5) { o = grade(o); }
 
   // Look (LUT 3D Rec.709) : appliqué à l'image affichée.
   if (uniform.uE.w > 0.5 && uniform.uE.y > 0.0) { o = mix(o, applyLut(o, i32(uniform.uE.z)), uniform.uE.y); }
@@ -549,17 +576,29 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
 
   // ---------- Aides à l'écran (affichage seulement) ----------
   let pxf = uv * dims;
-  // Peaking : contraste local (gradient du log de luminance) fort = détail net. Mesuré sur la source avant
-  // tone mapping, aux coordonnées distordues, donc il suit la mise au point et non le look.
+  // Peaking : contraste local fort = détail net. Filtre de Sobel 3×3 sur le log de la luminance de la source
+  // (avant tone mapping, aux coordonnées distordues) : il suit la mise au point, pas le look, et le log rend
+  // le seuil indépendant de l'exposition (un même contraste relatif répond pareil dans les ombres et les hautes
+  // lumières). Sobel lisse dans l'autre direction, donc moins de fausses détections sur le bruit
+  // d'échantillonnage de l'aperçu (N faible) que de simples différences entre voisins.
+  // Le flou est légitimement sans contraste : plus la sensibilité est haute, plus des détails faibles s'allument.
   if (uniform.uAid.z > 0.0) {
     let t = 1.0 / dims;
-    let lx0 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs - vec2f(t.x, 0.0), 0.0).rgb, LUMA) + 1e-3);
-    let lx1 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs + vec2f(t.x, 0.0), 0.0).rgb, LUMA) + 1e-3);
-    let ly0 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs - vec2f(0.0, t.y), 0.0).rgb, LUMA) + 1e-3);
-    let ly1 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs + vec2f(0.0, t.y), 0.0).rgb, LUMA) + 1e-3);
-    let gm = abs(lx1 - lx0) + abs(ly1 - ly0);
-    let k = smoothstep(1.2 / uniform.uAid.z, 1.8 / uniform.uAid.z, gm);
-    o = mix(o, vec3f(1.0, 0.18, 0.12), k);
+    var l: array<f32, 9>;
+    for (var j = 0; j < 3; j++) {
+      for (var i = 0; i < 3; i++) {
+        let off = vec2f(f32(i - 1), f32(j - 1)) * t;
+        l[j * 3 + i] = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs + off, 0.0).rgb, LUMA) + 1e-3);
+      }
+    }
+    // Noyaux de Sobel (poids 1 2 1) ; ÷ 4 pour retrouver l'échelle d'une différence centrale sur 2 px.
+    let gx = ((l[2] + 2.0 * l[5] + l[8]) - (l[0] + 2.0 * l[3] + l[6])) * 0.25;
+    let gy = ((l[6] + 2.0 * l[7] + l[8]) - (l[0] + 2.0 * l[1] + l[2])) * 0.25;
+    let gm = length(vec2f(gx, gy));
+    let k = smoothstep(0.9 / uniform.uAid.z, 1.4 / uniform.uAid.z, gm);
+    // Option noir et blanc atténué : la couleur du peaking ressort sur n'importe quelle image.
+    if (uniform.uAid3.w > 0.5) { o = vec3f(dot(o, LUMA) * 0.8); }
+    o = mix(o, uniform.uAid3.xyz, k);
   }
   // Zébras : rayures diagonales sur les zones affichées au-dessus du seuil (surexposition).
   if (uniform.uAid.x > 0.5 && dot(o, LUMA) >= uniform.uAid.y && fract((pxf.x + pxf.y) / 10.0) < 0.5) {
@@ -610,8 +649,14 @@ export interface DisplayAids {
   zebra: boolean;
   /** Seuil des zébras, valeur affichée 0–1 (0,95 ≈ 95 IRE). */
   zebraLevel: number;
-  /** Force du peaking, 0 = désactivé. */
+  /** Focus peaking affiché. */
+  peakingOn: boolean;
+  /** Sensibilité du peaking (×1 par défaut ; plus haut = des détails moins contrastés s'allument). */
   peaking: number;
+  /** Couleur du surlignage. */
+  peakingColor: PeakingColor;
+  /** Image en noir et blanc sous le peaking (la couleur ressort mieux). */
+  peakingMono: boolean;
   thirds: boolean;
   safe: boolean;
   center: boolean;
@@ -619,7 +664,12 @@ export interface DisplayAids {
   maskAspect: number;
   maskOpacity: number;
 }
-export const NO_AIDS: DisplayAids = { zebra: false, zebraLevel: 0.95, peaking: 0, thirds: false, safe: false, center: false, maskAspect: 0, maskOpacity: 0.85 };
+export type PeakingColor = 'red' | 'green' | 'blue' | 'yellow' | 'white';
+/** Couleurs de peaking (valeurs affichées, sRGB). */
+export const PEAKING_COLORS: Record<PeakingColor, [number, number, number]> = {
+  red: [1, 0.18, 0.12], green: [0.2, 1, 0.3], blue: [0.25, 0.55, 1], yellow: [1, 0.92, 0.15], white: [1, 1, 1],
+};
+export const NO_AIDS: DisplayAids = { zebra: false, zebraLevel: 0.95, peakingOn: false, peaking: 1, peakingColor: 'red', peakingMono: false, thirds: false, safe: false, center: false, maskAspect: 0, maskOpacity: 0.85 };
 
 interface Target { tex: pc.Texture; rt: pc.RenderTarget }
 
@@ -904,10 +954,19 @@ export class PostProcessor {
     scope.resolve('uSplitS').setValue(st.splitS); scope.resolve('uSplitH').setValue(st.splitH);
     scope.resolve('uMono').setValue(st.mono);
 
+    const g = gradeCoefs(p);
+    scope.resolve('uWb').setValue([...g.wb, 0]);
+    scope.resolve('uLift').setValue([...g.lift, 0]);
+    scope.resolve('uGamma').setValue([...g.gamma, 0]);
+    scope.resolve('uGain').setValue([...g.gain, 0]);
+    scope.resolve('uGrade').setValue([g.contrast, g.saturation, CONTRAST_PIVOT, g.active ? 1 : 0]);
+
     const a = target ? NO_AIDS : this.aids;
     const bits = (a.thirds ? 1 : 0) | (a.safe ? 2 : 0) | (a.center ? 4 : 0);
-    scope.resolve('uAid').setValue([a.zebra ? 1 : 0, a.zebraLevel, a.peaking, bits]);
+    scope.resolve('uAid').setValue([a.zebra ? 1 : 0, a.zebraLevel, a.peakingOn ? Math.max(a.peaking, 0.05) : 0, bits]);
     scope.resolve('uAid2').setValue([a.maskAspect, a.maskOpacity, aspect, 0]);
+    const pcol = PEAKING_COLORS[a.peakingColor] ?? PEAKING_COLORS.red;
+    scope.resolve('uAid3').setValue([pcol[0], pcol[1], pcol[2], a.peakingMono ? 1 : 0]);
 
     // Export : image finale (encodée sRGB, flottante) dans une cible ; sinon affichage dans le cadre à l'écran.
     if (target) pc.drawQuadWithShader(this.device, target, this.compShader);

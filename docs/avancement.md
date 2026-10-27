@@ -143,3 +143,26 @@ Statut : livré, à valider à l'œil. Commits : `5c475f0` (audit + interface), 
 - Fonctions : 34 objectifs dont 24 séries réelles (ARRI, Cooke, Zeiss, Leica, Canon, anamorphiques, zooms, vintage) avec défauts optiques, série de focales, ouverture max., MAP min. ; profondeur de champ et hyperfocale ; position de la caméra au chiffre ; placement de la scène (position, rotation, échelle, enregistré dans le projet, picking corrigé) ; résolution d'aperçu 50 % / 100 % / Retina ; zébras, focus peaking, tiers, zones de sécurité, masques de format ; « Mes réglages » ; cadences 23,976 à 60 (ffmpeg en 24000/1001) ; couleurs libres halation / streak ; QR code de la télécommande (`uqr`, MIT, local).
 - Approximatif : caractères des objectifs réels non mesurés ; export reproductible à ~0,02 % près seulement (ordre des splats à profondeur égale dans PlayCanvas, voir gotchas) ; pas de multi-sélection / copier-coller de clés ni zoom horizontal de la timeline ; pas d'aperçu image sur le téléphone.
 - Prochaine étape : validation à l'œil par l'utilisateur, puis plusieurs scènes dans un même plan (à décider).
+
+### Placement de la scène, refonte (2026-10-27, en cours, pas encore vu à l'écran)
+- Problème signalé : réglage introuvable (rangé dans Moniteur, replié) et qui semblait sans effet. Cause : les rotations tournaient autour de l'origine du fichier, souvent loin du contenu, si bien que la scène sortait du cadre au lieu de pivoter.
+- Fait : onglet **Scène** à part ; boutons − / + par axe avec un pas réglable (1 cm à 10 m, 1° à 90°) et saisie directe ; rotation et échelle autour du centre robuste du modèle (percentiles 2–98 %) : position d'entité p = c + t − R·(s·c) dans `applySceneTransform` ; raccourcis ⌥ ↑ / ↓ (hauteur 10 cm, Maj 1 m) et ⌥ ← / → (rotation autour de Y, 15°, Maj 90°).
+- Décision : les axes X et Z gardent leur nom (pas de « gauche / droite ») parce que leur sens à l'écran dépend de l'angle de vue (la vue par défaut regarde depuis −Z).
+- Compatibilité : les projets enregistrés avec une rotation ou une échelle non nulle se placent un peu autrement (le pivot a changé) ; pose neutre identique.
+- Reste : test visuel (navigateur non connecté pendant la session).
+
+### Focus peaking, refonte (2026-10-27, vérifié en headless)
+- Avant : un curseur de force (0 = coupé), rouge fixe, différences entre pixels voisins.
+- Fait : interrupteur « Focus peaking (P) », sensibilité ×0,25 à ×3 (×1 par défaut), couleur (rouge, vert, bleu, jaune, blanc), option image en noir et blanc sous le peaking ; touche **P** ; réglages repris de l'ancien format enregistré dans le navigateur. Shader (`src/render/post.ts`) : filtre de Sobel 3×3 sur le log de la luminance de la source (avant tone mapping, coordonnées distordues), seuil adouci par smoothstep.
+- Décisions : log de la luminance pour qu'un même contraste relatif réponde pareil dans les ombres et les hautes lumières ; Sobel plutôt que différences simples parce qu'il lisse dans l'autre direction (moins de fausses détections sur le bruit de l'aperçu à N faible).
+- Mesuré (Tribunal, 35 mm f/1.4, 64 échantillons) : map 3 m → seule la barre du premier plan s'allume ; map 10 / 30 m → plans lointains allumés, barre éteinte. Export avec et sans peaking : même écart que deux exports sans peaking (non-déterminisme connu, ~0,09 % des valeurs > 0,01), donc absent de l'export. 152 tests, tsc, build OK.
+- Captures : `docs/captures/peaking-3m.png`, `peaking-10m.png`, `peaking-vert-nb.png` (vert + noir et blanc, map 31,8 m).
+- Approximatif : en mouvement (N faible), des contours fantômes du flou peuvent s'allumer ; juger le point une fois l'aperçu affiné. Seuil réglé à l'œil, pas calibré sur le CoC.
+
+### Étalonnage (2026-10-27, vérifié en headless)
+- Fait : groupe **Étalonnage** dans l'onglet Image (replié par défaut, badge « actif »). Température et teinte (balance des blancs), contraste, saturation, lift / gamma / gain avec chacun une couleur (force + teinte en degrés), bouton « Réinitialiser l'étalonnage ». Double-clic sur un libellé = valeur neutre. Enregistré dans le projet (champs `grade*` de `post`, les anciens projets retombent sur le neutre via `mergeDefaults`).
+- Maths dans `src/optics/grade.ts` (10 tests) : y = gain·x + lift·(1 − x), puis y^(1/gamma), contraste autour du gris 18 % encodé (0,461), saturation autour de la luminance Rec.709. Les couleurs des roues sont des directions de luminance nulle (teinte pure − sa luminance). Shader : `grade()` dans `src/render/post.ts`, miroir exact.
+- Décisions : balance des blancs sur l'image **linéaire**, avant émulsion / tone mapping (comme les gains d'une caméra, luminance d'un gris conservée) ; le reste sur l'image **affichée**, juste **avant la LUT** (l'étalonnage nourrit le look, ordre d'un logiciel d'étalonnage). Réglages neutres : étape sautée, sortie identique à avant.
+- Mesuré (Tribunal, 35 mm f/1.4, 64 échantillons) : neutre / chaud (+0,6) / froid (−0,6, teinte +0,2) / teal-orange / noir et blanc contrasté / lift-gamma-gain : réponses attendues. Bouton de réinitialisation OK. 162 tests, tsc, build OK.
+- Capture : `docs/captures/etalonnage.png` (planche 3 × 2 dans cet ordre).
+- Approximatif : la température est une échelle relative (±1 = 1 diaphragme d'écart rouge / bleu), pas des kelvins ; pas de roues graphiques (curseurs force + teinte) ; non animable dans la timeline.

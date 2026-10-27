@@ -17,6 +17,12 @@ export interface ShortcutContext {
   saveProject(): void;
   openProject(): void;
   openExport(): void;
+  /** Déplace le modèle verticalement (mètres, + vers le haut). */
+  moveScene(dyM: number): void;
+  /** Tourne le modèle autour de la verticale (degrés). */
+  turnScene(deg: number): void;
+  /** Active ou coupe le focus peaking. */
+  togglePeaking(): void;
 }
 
 export interface Shortcut {
@@ -25,6 +31,8 @@ export interface Shortcut {
   /** Exige Ctrl / Cmd. */
   mod?: boolean;
   shift?: boolean;
+  /** Exige Option (Alt) ; absent : Option indifférent (sauf pour les lettres). */
+  alt?: boolean;
   label: string;
   /** Texte de la touche dans l'aide. */
   display: string;
@@ -50,6 +58,15 @@ export const SHORTCUTS: Shortcut[] = [
   { key: 'k', display: 'K', label: 'Clé sur caméra, map et zoom', run: (c) => { toShoot(c); c.timeline.keyNow(TRACK_IDS); } },
   { key: 'c', display: 'C', label: 'Clé sur la caméra seule', run: (c) => { toShoot(c); c.timeline.keyNow(CAMERA_TRACKS); } },
   { key: 'Delete', display: 'Suppr', label: 'Supprimer la clé sélectionnée' },
+  // Placement de la scène : avant les flèches seules, qui sinon répondraient aussi avec Option.
+  { key: 'ArrowUp', alt: true, shift: false, display: '⌥ ↑', label: 'Monter la scène de 10 cm', run: (c) => c.moveScene(0.1) },
+  { key: 'ArrowDown', alt: true, shift: false, display: '⌥ ↓', label: 'Descendre la scène de 10 cm', run: (c) => c.moveScene(-0.1) },
+  { key: 'ArrowUp', alt: true, shift: true, display: '⌥ Maj ↑', label: 'Monter la scène de 1 m', run: (c) => c.moveScene(1) },
+  { key: 'ArrowDown', alt: true, shift: true, display: '⌥ Maj ↓', label: 'Descendre la scène de 1 m', run: (c) => c.moveScene(-1) },
+  { key: 'ArrowLeft', alt: true, shift: false, display: '⌥ ←', label: 'Tourner la scène de 15° (−)', run: (c) => c.turnScene(-15) },
+  { key: 'ArrowRight', alt: true, shift: false, display: '⌥ →', label: 'Tourner la scène de 15° (+)', run: (c) => c.turnScene(15) },
+  { key: 'ArrowLeft', alt: true, shift: true, display: '⌥ Maj ←', label: 'Tourner la scène de 90° (−)', run: (c) => c.turnScene(-90) },
+  { key: 'ArrowRight', alt: true, shift: true, display: '⌥ Maj →', label: 'Tourner la scène de 90° (+)', run: (c) => c.turnScene(90) },
   { key: 'ArrowLeft', display: '←', label: 'Image précédente', run: (c) => { toShoot(c); c.timeline.seek(c.timeline.time - 1 / c.fps()); } },
   { key: 'ArrowRight', display: '→', label: 'Image suivante', run: (c) => { toShoot(c); c.timeline.seek(c.timeline.time + 1 / c.fps()); } },
   { key: 'ArrowLeft', shift: true, display: 'Maj ←', label: '1 seconde en arrière', run: (c) => { toShoot(c); c.timeline.seek(c.timeline.time - 1); } },
@@ -58,6 +75,7 @@ export const SHORTCUTS: Shortcut[] = [
   { key: 'End', display: 'Fin', label: 'Fin du plan', run: (c) => { toShoot(c); c.timeline.seek(c.timeline.shot.duration); } },
   { key: '[', display: '[', label: 'Ouvrir d\'un tiers de diaph', run: (c) => c.setFNumber(stepFNumber(c.fNumber(), -1)) },
   { key: ']', display: ']', label: 'Fermer d\'un tiers de diaph', run: (c) => c.setFNumber(stepFNumber(c.fNumber(), 1)) },
+  { key: 'p', display: 'P', label: 'Focus peaking', run: (c) => c.togglePeaking() },
   { key: 'x', display: 'X', label: 'Fenêtre d\'export', run: (c) => c.openExport() },
   { key: 's', mod: true, display: 'Ctrl/Cmd S', label: 'Enregistrer le projet', run: (c) => c.saveProject() },
   { key: 'o', mod: true, display: 'Ctrl/Cmd O', label: 'Ouvrir un projet', run: (c) => c.openProject() },
@@ -70,7 +88,7 @@ export function findShortcut(e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   // Option (Alt) sert à taper [ ] sur un clavier AZERTY de Mac : seules les lettres sont écartées avec Alt.
   if (e.altKey && /^[a-z]$/.test(key)) return undefined;
-  return SHORTCUTS.find((s) => s.run && s.key === key && !!s.mod === mod && (s.shift === undefined ? !e.shiftKey || key.length === 1 : s.shift === e.shiftKey));
+  return SHORTCUTS.find((s) => s.run && s.key === key && !!s.mod === mod && (s.alt === undefined || s.alt === e.altKey) && (s.shift === undefined ? !e.shiftKey || key.length === 1 : s.shift === e.shiftKey));
 }
 
 export function createShortcuts(ctx: ShortcutContext, help: HTMLElement): void {

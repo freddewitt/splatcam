@@ -1,6 +1,6 @@
 import * as pc from 'playcanvas';
 import { DEFAULT_SENSOR_ID, getSensor, rad2deg, sensorFov } from './optics/sensor';
-import { createPanel, IDENTITY_TRANSFORM, type PanelState } from './ui/panel';
+import { createPanel, IDENTITY_TRANSFORM, wrapDeg, type PanelState } from './ui/panel';
 import { DEFAULT_POST, DIRT_SIZE } from './render/post';
 import { DofRenderer } from './render/dof-renderer';
 import { pickDepth, type PickData } from './render/pick';
@@ -105,13 +105,25 @@ function poseCamera(mode: 'explore' | 'shoot') {
 /** Entité de la scène chargée (modèle), null avant le premier dépôt. */
 let current: pc.Entity | null = null;
 
-/** Place le modèle selon `state.sceneTransform` (position, rotation X Y Z, échelle uniforme). */
+/** Centre robuste du modèle (repère du fichier) : pivot des rotations et de l'échelle. */
+const scenePivot = new pc.Vec3();
+const pivotRot = new pc.Quat();
+
+/**
+ * Place le modèle selon `state.sceneTransform` (déplacement, rotation X Y Z, échelle uniforme),
+ * en tournant autour du centre du modèle et non de l'origine du fichier (souvent loin du contenu) :
+ * monde = T(c + t) · R · S · T(−c), soit une position d'entité p = c + t − R·(s·c).
+ */
 function applySceneTransform() {
   if (!current) return;
-  const t = state.sceneTransform;
-  current.setLocalPosition(t.x, t.y, t.z);
-  current.setLocalEulerAngles(t.rx, t.ry, t.rz);
+  const t = state.sceneTransform, c = scenePivot;
+  pivotRot.setFromEulerAngles(t.rx, t.ry, t.rz);
+  const rc = pivotRot.transformVector(c).mulScalar(t.scale);
+  current.setLocalPosition(c.x + t.x - rc.x, c.y + t.y - rc.y, c.z + t.z - rc.z);
+  current.setLocalRotation(pivotRot);
   current.setLocalScale(t.scale, t.scale, t.scale);
+  dirty = true;
+  renderBurst = EXPLORE_SETTLE_FRAMES;
 }
 
 function applyCameras() {
@@ -388,6 +400,9 @@ createShortcuts({
   saveProject: () => { void projectUi.save(); },
   openProject: () => projectUi.open(),
   openExport: () => (document.querySelector('#export .open') as HTMLElement | null)?.click(),
+  moveScene(dyM) { state.sceneTransform.y += dyM / state.metersPerUnit; panel.sync(); applyCameras(); },
+  turnScene(deg) { const t = state.sceneTransform; t.ry = wrapDeg(t.ry + deg); panel.sync(); applyCameras(); },
+  togglePeaking: () => panel.togglePeaking(),
 }, document.getElementById('shortcuts')!);
 
 document.getElementById('help-btn')?.addEventListener('click', () => document.getElementById('shortcuts')!.classList.toggle('hidden'));
@@ -480,15 +495,14 @@ async function loadFile(file: File) {
     current.addComponent('gsplat', { asset });
     app.root.addChild(current);
     if (!keepPose) Object.assign(state.sceneTransform, IDENTITY_TRANSFORM);
-    applySceneTransform();
     // Cadrage robuste : la AABB brute est faussée par les splats aberrants,
     // on utilise les percentiles 2 à 98 % des centres.
     const centers = (asset.resource as pc.GSplatResource | null)?.centers;
     pickData = asset.resource ? buildPickData(asset.resource as pc.GSplatResource) : null;
-    if (keepPose) { panel.sync(); applyCameras(); }
-    else if (centers && centers.length >= 3) {
+    const lo = new pc.Vec3(), hi = new pc.Vec3();
+    const hasBox = !!centers && centers.length >= 3;
+    if (hasBox) {
       const n = centers.length / 3;
-      const lo = new pc.Vec3(), hi = new pc.Vec3();
       const axis = new Float32Array(n);
       for (let k = 0; k < 3; k++) {
         for (let i = 0; i < n; i++) axis[i] = centers[i * 3 + k];
@@ -496,7 +510,13 @@ async function loadFile(file: File) {
         const a = axis[Math.floor(n * 0.02)], b = axis[Math.floor(n * 0.98)];
         if (k === 0) { lo.x = a; hi.x = b; } else if (k === 1) { lo.y = a; hi.y = b; } else { lo.z = a; hi.z = b; }
       }
-      const target = new pc.Vec3().add2(lo, hi).mulScalar(0.5);
+    }
+    // Pivot = centre robuste ; avec la pose neutre, le modèle reste exactement où le fichier le met.
+    scenePivot.add2(lo, hi).mulScalar(0.5);
+    applySceneTransform();
+    if (keepPose) { panel.sync(); applyCameras(); }
+    else if (hasBox) {
+      const target = scenePivot.clone();
       const dist = Math.max(0.5, hi.clone().sub(lo).length() * 0.9);
       for (const o of [orbits.explore, orbits.shoot]) {
         o.target.copy(target);
