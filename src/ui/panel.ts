@@ -1,5 +1,6 @@
 import { rad2deg, SENSOR_FORMATS, type Fov } from '../optics/sensor';
 import type { ApertureShape } from '../optics/aperture';
+import { FOCUS_MARKS, FOCUS_MIN_M, dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } from '../timeline/shot';
 import { LENS_PRESETS, getPreset, presetAperture } from '../optics/lens-preset';
 
 export type Mode = 'explore' | 'shoot';
@@ -87,6 +88,21 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     if (Number.isFinite(v) && v > 0) { state.focusM = v; onChange(); }
   });
 
+  // Bague de map : échelle en dioptries (1/m), repères gravés comme sur un objectif ; zoom : échelle log.
+  const ring = el<HTMLInputElement>('input', { type: 'range', min: '0', max: String(1 / FOCUS_MIN_M), step: '0.002', list: 'ringmarks' });
+  const marks = el<HTMLDataListElement>('datalist', { id: 'ringmarks' });
+  for (const m of FOCUS_MARKS) marks.append(el<HTMLOptionElement>('option', { value: String(Number.isFinite(m) ? 1 / m : 0) }));
+  const ringVal = el('b', { class: 'val' });
+  ring.addEventListener('input', () => { state.focusM = metersFromDiopters(parseFloat(ring.value)); sync(); onChange(); });
+  const zoomLog = el<HTMLInputElement>('input', { type: 'range', min: String(zoomFromFocal(4)), max: String(zoomFromFocal(300)), step: '0.002' });
+  const zoomVal = el('b', { class: 'val' });
+  zoomLog.addEventListener('input', () => { state.focal = Math.round(focalFromZoom(parseFloat(zoomLog.value)) * 10) / 10; sync(); onChange(); });
+  const labelled = (label: string, val: HTMLElement, input: HTMLElement) => {
+    const head = el('span'); head.append(label + ' ', val);
+    const row = el('label', { class: 'field' }); row.append(head, input);
+    return row;
+  };
+
   const samples = el<HTMLInputElement>('input', { type: 'number', min: '1', max: '1024', step: '1' });
   samples.addEventListener('input', () => {
     const v = parseInt(samples.value, 10);
@@ -168,6 +184,9 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     field('Focale (mm)', focalRange, focalNum),
     field('Ouverture', fnum),
     field('Mise au point (m)', focus),
+    labelled('Bague de map', ringVal, ring),
+    marks,
+    labelled('Zoom (échelle log)', zoomVal, zoomLog),
     field('Échelle (m / unité)', scale),
     field('Échantillons (cible)', samples),
     title('Objectif'),
@@ -189,6 +208,10 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     fnum.value = String(state.fNumber);
     focus.value = String(+state.focusM.toFixed(3));
     samples.value = String(state.samples);
+    ring.value = String(dioptersFromMeters(state.focusM));
+    ringVal.textContent = state.focusM >= 500 ? '∞' : `${state.focusM.toFixed(2)} m`;
+    zoomLog.value = String(zoomFromFocal(Math.min(Math.max(state.focal, 4), 300)));
+    zoomVal.textContent = `${state.focal} mm`;
     preset.value = state.presetId;
     for (const f of syncers) f();
     root.classList.toggle('exploring', state.mode === 'explore');

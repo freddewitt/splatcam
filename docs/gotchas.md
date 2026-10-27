@@ -18,5 +18,12 @@
 - CoC exacte (lentille mince) avec FOV donné par f : rayon d'ouverture × d/(d−f) (`apertureScale`).
 - La AABB d'un gsplat PlayCanvas est faussée par les splats aberrants : cadrer sur les percentiles 2-98 % de `GSplatResource.centers`.
 
+## Timeline
+- Les pistes sont interpolées dans leur espace perceptif : map en DIOPTRIES (1/m, ∞ = 0), zoom en ln(focale). Convertir à l'application (`metersFromDiopters`, `focalFromZoom`), jamais à l'interpolation.
+- La pose de la caméra de tournage vient de l'orbite (`orbits.shoot`, source de vérité : pan = yaw, tilt = pitch, + roll). Ne pas relire des angles d'Euler depuis l'entité (représentation ambiguë) ; position = `shoot.getPosition()`, cible = position + avant·dist.
+- Pentes automatiques des clés : Fritsch-Carlson (plafond 3× la pente voisine) sinon dépassement entre deux clés proches ; poignées bornées à la largeur du segment pour que x(t) reste monotone.
+- Enregistrement en lecture : un geste à la main prime sur la piste pendant `HOLD_MS` (300 ms) puis la lecture reprend ; l'allègement Douglas-Peucker a lieu à l'arrêt (les gestes posent une clé par image).
+- Tests Chrome headless : puppeteer-core (hors projet, dans le scratchpad) + `/Applications/Google Chrome.app`, `--enable-unsafe-webgpu` ; `puppeteer` `mouse.click(x, y, { count: 2 })` pour un double-clic.
+
 ## Export
 (vide)

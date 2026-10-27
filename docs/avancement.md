@@ -49,5 +49,16 @@
 - Capture : `docs/captures/M3.png`. Réglages : Full Frame 24×36, 50 mm, f/1.4, map 2 m, échelle 1 m/unité, tilt +3° (swing 0), 128 éch., caméra à l'origine regardant −Z (`orbits.shoot.target=(0,0,−1), dist=1, yaw=0, pitch=0`).
 - Prochaine étape : M4 (timeline de plan : pistes caméra / map / zoom, courbes bézier, mode enregistrement).
 
-## M4 à M8, M7bis
+## M4. Timeline de plan
+- Statut : validé (test à la souris sous Chrome headless ; tactile et téléphone non testés)
+- Date : 2026-10-27
+- Commit : voir `git log` (commit « M4 : … »)
+- Ce qui marche : pistes X / Y / Z, pan / tilt / roll, mise au point, zoom, clés en secondes ; éditeur de courbes à poignées bézier (clés Bézier / Linéaire / Palier, poignées Auto sans dépassement, glisser clé et poignées) ; feuille de clés (glisser, double-clic pour poser, calage 25 i/s) ; transport (lecture, pause, boucle, scrub sur la règle, retour au début, durée réglable) ; mode enregistrement (bouger la caméra, tirer la bague de map ou le zoom pose des clés, à l'arrêt comme en lecture). Modules purs `src/timeline/` (curve, track, shot, controller : 15 tests), UI `src/ui/timeline-ui.ts`, curseurs « Bague de map » (dioptries) et « Zoom » (log) dans le panneau. 63 tests Vitest verts.
+- Vérifié (Chrome headless, Tribunal3b) : t = 2,5 s entre deux jeux de clés → lacet 200° (milieu de 180 et 220), focale 54,54 mm (= √(35·85), milieu en log), map 1,71 m (milieu en dioptries) ; lecture réelle jusqu'à la fin du plan ; double-clic = clé, glisser = déplacement calé, poignée bézier déplacée (`auto` → faux), bouton Linéaire / Auto ; enregistrement en lecture (geste souris 1,5 s + curseur de map 1 s) → clés posées puis allégées, relecture fidèle.
+- Approximatif : le dock de timeline masque le bas du cadre (pas de redimensionnement du cadre) ; pas de sélection multiple, pas de copier-coller de clés, pas de zoom / défilement horizontal de la feuille ; l'enregistrement écrase les clés existantes au même temps seulement (pas de remplacement d'une plage) ; ordre d'Euler pan / tilt / roll = celui de PlayCanvas (`setEulerAngles`), à confirmer sur un roll fort ; pistes d'ouverture, tilt et shift pas animables (hors périmètre M4).
+- Décisions non évidentes : voir `docs/gotchas.md` (Timeline). Valeurs interpolées : map en dioptries, zoom en ln(focale), l'orbite de tournage reste la source de vérité (la pose caméra est dérivée).
+- Capture : `docs/captures/M4.png` (feuille de clés après enregistrement), `docs/captures/M4-courbes.png` (courbe de map, poignée, repères de bague). Réglages : Super 35 16:9, 35 mm, f/2.8, 16 éch., Tribunal3b_export_28000.ply, plan de 6 s, geste d'enregistrement décrit ci-dessus.
+- Prochaine étape : M5 (flou de mouvement par angle d'obturation : chaque échantillon d'ouverture reçoit son instant dans la fenêtre d'obturation et lit la timeline à cet instant ; rolling shutter, gate weave).
+
+## M5 à M8, M7bis
 - Statut : à faire

@@ -5,6 +5,9 @@ import { DofRenderer } from './render/dof-renderer';
 import { pickDepth, type PickData } from './render/pick';
 import { DEFAULT_APERTURE } from './optics/aperture';
 import { focusThroughPoint, tiltGradient } from './optics/tilt';
+import { TimelineController, type TimelineEngine, type TrackValues } from './timeline/controller';
+import { dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } from './timeline/shot';
+import { createTimelineUI } from './ui/timeline-ui';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -50,15 +53,15 @@ shoot.addComponent('camera', {
 app.root.addChild(shoot);
 
 // Orbite de debug : angles + distance autour d'une cible (unités de scène), un état par caméra.
-interface Orbit { yaw: number; pitch: number; dist: number; target: pc.Vec3 }
-const newOrbit = (): Orbit => ({ yaw: 0, pitch: -15, dist: 4, target: new pc.Vec3(0, 0, 0) });
+interface Orbit { yaw: number; pitch: number; roll: number; dist: number; target: pc.Vec3 }
+const newOrbit = (): Orbit => ({ yaw: 0, pitch: -15, roll: 0, dist: 4, target: new pc.Vec3(0, 0, 0) });
 const orbits = { explore: newOrbit(), shoot: newOrbit() };
 const cams = { explore, shoot };
 
 function poseCamera(mode: 'explore' | 'shoot') {
   const o = orbits[mode], cam = cams[mode];
   cam.setPosition(o.target);
-  cam.setEulerAngles(o.pitch, o.yaw, 0);
+  cam.setEulerAngles(o.pitch, o.yaw, o.roll);
   cam.translateLocal(0, 0, o.dist);
 }
 
@@ -101,6 +104,38 @@ function applyCameras() {
 const dof = new DofRenderer(app, shoot);
 const panel = createPanel(state, applyCameras);
 applyCameras();
+
+// Timeline : pistes caméra (pose réelle de la caméra de tournage), map (dioptries) et zoom (ln focale).
+// La pose est lue / écrite dans l'orbite de tournage, qui reste la source de vérité (pan = yaw, tilt = pitch).
+const timelineEngine: TimelineEngine = {
+  read(): TrackValues {
+    const o = orbits.shoot, p = shoot.getPosition();
+    return {
+      x: p.x, y: p.y, z: p.z, pan: o.yaw, tilt: o.pitch, roll: o.roll,
+      focus: dioptersFromMeters(state.focusM), zoom: zoomFromFocal(state.focal),
+    };
+  },
+  write(v) {
+    const o = orbits.shoot, cur = timelineEngine.read();
+    const pose = { ...cur, ...v };
+    if (['x', 'y', 'z', 'pan', 'tilt', 'roll'].some((id) => id in v)) {
+      o.yaw = pose.pan; o.pitch = pose.tilt; o.roll = pose.roll;
+      // La caméra regarde −Z local : la cible d'orbite est devant elle, à `dist`.
+      const fwd = new pc.Quat().setFromEulerAngles(o.pitch, o.yaw, o.roll).transformVector(pc.Vec3.FORWARD);
+      o.target.set(pose.x, pose.y, pose.z).add(fwd.mulScalar(o.dist));
+    }
+    if ('focus' in v) state.focusM = metersFromDiopters(pose.focus);
+    if ('zoom' in v) state.focal = Math.round(focalFromZoom(pose.zoom) * 100) / 100;
+    applyCameras();
+    panel.sync();
+  },
+};
+const timeline = new TimelineController(timelineEngine);
+createTimelineUI(document.getElementById('timeline')!, timeline);
+// Lancer la lecture depuis l'exploration bascule en tournage (seule vue où la timeline pilote la caméra).
+timeline.onChange(() => {
+  if (timeline.playing && state.mode === 'explore') { state.mode = 'shoot'; panel.sync(); applyCameras(); }
+});
 
 let drag: { x: number; y: number; pan: boolean; moved: number } | null = null;
 canvas.addEventListener('pointerdown', (e) => {
@@ -235,7 +270,10 @@ window.addEventListener('drop', (e) => {
 
 // HUD : FPS lissés sur 0,5 s.
 let frames = 0, last = performance.now();
-app.on('update', () => {
+app.on('update', (dt: number) => {
+  // Lecture / enregistrement de la timeline : seulement en mode tournage (la caméra d'exploration est libre).
+  if (state.mode === 'shoot') timeline.tick(dt, performance.now());
+  else if (timeline.playing) timeline.pause();
   if (state.mode === 'explore') app.renderNextFrame = true;
   else { dof.frame(dirty); dirty = false; }
   frames++;
@@ -249,7 +287,7 @@ app.on('update', () => {
 
 // Handle de debug pour les tests visuels (dev uniquement).
 if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).__splatcam = { state, orbits, applyCameras, dof, panel, device, canvas };
+  (window as unknown as Record<string, unknown>).__splatcam = { state, orbits, applyCameras, dof, panel, device, canvas, timeline, shoot };
 }
 
 app.start();
