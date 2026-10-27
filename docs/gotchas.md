@@ -48,4 +48,11 @@
 - Une déclaration `uniform` par ligne en WGSL PlayCanvas ; pas de backtick dans les shaders, mais `${CONSTANTE}` du template JS sert à injecter les nombres de prises.
 
 ## Export
-(vide)
+- Les sous-rendus (`app.render()`) ne marchent que dans un tour de boucle : l'export est une machine à états (`Exporter.tick`, appelée depuis `update`), pas une boucle `await` ; pendant l'export `dof.frame` n'est plus appelé et le canvas reste noir (la caméra de fond efface à chaque `render`).
+- Sortie en RGBA32F, pas RGBA16F (11 bits de mantisse seulement : pas de vrai 16 bits). `PostProcessor.run(..., target)` écrit la même composition (sRGB déjà appliqué) dans une cible ; `Texture.read` donne la ligne 0 en haut, aucune inversion nécessaire (vérifié par comparaison avec l'écran).
+- Relecture par bandes de ≤ 128 Mo : le tampon de relecture WebGPU est limité à 256 Mo par défaut (une image 8K RGBA32F fait 530 Mo).
+- `CompressionStream('deflate')` produit du zlib (en-tête + Adler-32), exactement ce qu'attend IDAT ; `DecompressionStream` sert aux tests (Node ≥ 18).
+- `showDirectoryPicker` exige un geste utilisateur : l'appeler avant tout autre `await` du clic. `createWritable` écrit dans un fichier temporaire validé à `close()` : une annulation ne laisse pas de PNG tronqué.
+- Reprise : empreinte (FNV-1a de la sérialisation à clés triées) des réglages + résolution + échantillons + cadence + plan, stockée dans `shot_export.json`. Les valeurs que le plan écrase (pose, map, zoom) n'y comptent que si leur piste est vide, sinon la position de la tête de lecture changerait l'empreinte.
+- `restore()` ne rejoue pas le plan : il remet pose, map, zoom et temps d'avant l'export (sinon `timeline.seek` écraserait la caméra posée à la main).
+- Tester l'export sans sélecteur : OPFS (`navigator.storage.getDirectory()`) a la même API que `showDirectoryPicker` ; `__splatcam.folderSink(dir)` et `__splatcam.exporter` sont exposés en dev.

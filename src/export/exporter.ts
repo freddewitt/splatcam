@@ -1,0 +1,147 @@
+// Export d'une séquence d'images : rend chaque image du plan à la résolution voulue (hors écran, mêmes
+// sous-rendus que l'aperçu), la relit en flottant, l'écrit en PNG 16 bits. Piloté par `tick()` depuis la
+// boucle de l'application (les sous-rendus ne peuvent se faire que dans un tour de boucle PlayCanvas).
+//
+// Déterminisme : l'échantillon k d'une image est toujours le même (indice k dans les suites de Halton), le
+// bruit capteur / grain est semé par le numéro d'image, la caméra vient du plan à t = i / fps.
+
+import type { DofRenderer } from '../render/dof-renderer';
+import { encodePng16 } from './png16';
+import { META_NAME, type Sink } from './sinks';
+import { fingerprint, frameName, frameTime, pendingFrames, stableStringify } from './sequence';
+
+/** Ce que l'export demande à l'application (caméra, plan, état à restaurer). */
+export interface ExportHost {
+  dof: DofRenderer;
+  /** Passe en mode tournage, coupe lecture et enregistrement, mémorise l'état à restaurer. */
+  prepare(): void;
+  /** Place l'application à l'image `index` (instant du plan, graine du bruit). */
+  setFrame(index: number, timeS: number): void;
+  /** Rétablit l'état d'avant l'export. */
+  restore(): void;
+  /** Réglages sérialisables de la prise (objectif, post, plan) : empreinte de reprise et sidecar. */
+  settings(): unknown;
+}
+
+export interface ExportJob {
+  width: number;
+  height: number;
+  samples: number;
+  fps: number;
+  /** Numéros d'images (base 0) à produire, dans l'ordre. */
+  frames: number[];
+  /** Total de la séquence (pour la numérotation et l'affichage). */
+  total: number;
+  /** Sauter les images déjà présentes dans la destination. */
+  resume: boolean;
+}
+
+export interface ExportProgress {
+  /** Images terminées / à produire dans cette passe. */
+  done: number;
+  count: number;
+  /** Image en cours (base 0) et échantillons accumulés. */
+  frame: number;
+  sample: number;
+  samples: number;
+}
+
+export type ExportEnd = { ok: true; message: string; written: number } | { ok: false; cancelled: boolean; message: string };
+
+/** Sous-rendus par tour de boucle : assez pour avancer vite, assez peu pour garder l'interface vivante. */
+const STEP_SAMPLES = 4;
+
+export class Exporter {
+  private run: {
+    job: ExportJob; sink: Sink; pending: number[]; i: number; started: boolean;
+    phase: 'render' | 'write'; written: number; cancel: boolean; done: (e: ExportEnd) => void;
+  } | null = null;
+
+  constructor(private readonly host: ExportHost, private readonly onProgress: (p: ExportProgress) => void) {}
+
+  get running(): boolean { return this.run !== null; }
+
+  cancel(): void { if (this.run) this.run.cancel = true; }
+
+  /** Lance l'export ; la promesse se résout à la fin (réussie, annulée ou en erreur). */
+  async start(job: ExportJob, sink: Sink): Promise<ExportEnd> {
+    if (this.run) return { ok: false, cancelled: false, message: 'Un export est déjà en cours.' };
+    const key = fingerprint(stableStringify({ settings: this.host.settings(), w: job.width, h: job.height, n: job.samples, fps: job.fps, total: job.total }));
+    let pending = job.frames;
+    try {
+      if (job.resume) {
+        const meta = await sink.readMeta();
+        const prev = meta ? (JSON.parse(meta) as { key?: string }).key : undefined;
+        const done = await sink.existing();
+        if (done.size > 0 && prev !== key) {
+          return { ok: false, cancelled: false, message: 'Reprise impossible : les réglages (ou la résolution, les échantillons, le plan) ont changé depuis les images déjà écrites. Décocher « Reprendre » pour tout réécrire.' };
+        }
+        pending = pendingFrames(job.total, done).filter((f) => job.frames.includes(f));
+      }
+      await sink.write(META_NAME, JSON.stringify({ key, width: job.width, height: job.height, samples: job.samples, fps: job.fps, total: job.total, settings: this.host.settings() }, null, 2));
+    } catch (e) {
+      return { ok: false, cancelled: false, message: `Destination inutilisable : ${(e as Error).message}` };
+    }
+    if (pending.length === 0) return { ok: true, message: 'Toutes les images sont déjà écrites.', written: 0 };
+
+    this.host.prepare();
+    this.host.dof.beginStill(job.width, job.height);
+    return new Promise<ExportEnd>((resolve) => {
+      this.run = { job, sink, pending, i: 0, started: false, phase: 'render', written: 0, cancel: false, done: resolve };
+    });
+  }
+
+  /** Un tour de boucle. Renvoie true tant que l'export tient le rendu (l'application ne doit pas rendre elle-même). */
+  tick(): boolean {
+    const r = this.run;
+    if (!r) return false;
+    if (r.phase === 'write') return true;                 // relecture / encodage / écriture en cours (asynchrone)
+    if (r.cancel) { void this.end({ ok: false, cancelled: true, message: r.sink.abort() }); return true; }
+
+    const frame = r.pending[r.i];
+    const dof = this.host.dof;
+    if (!r.started) {
+      this.host.setFrame(frame, frameTime(frame, r.job.fps));
+      dof.reset();
+      r.started = true;
+    }
+    const finished = dof.stillStep(STEP_SAMPLES, r.job.samples);
+    this.onProgress({ done: r.i, count: r.pending.length, frame, sample: dof.accumulated, samples: r.job.samples });
+    if (finished) {
+      r.phase = 'write';
+      void this.writeFrame(frame).then(() => {
+        r.written++; r.i++; r.started = false;
+        this.onProgress({ done: r.i, count: r.pending.length, frame, sample: r.job.samples, samples: r.job.samples });
+        if (r.i >= r.pending.length) void this.finishOk();   // la phase reste « write » : plus de rendu
+        else r.phase = 'render';
+      }, (e: unknown) => this.end({ ok: false, cancelled: false, message: `Erreur à l'image ${frame + 1} : ${(e as Error).message}` }));
+    }
+    return true;
+  }
+
+  private async writeFrame(frame: number): Promise<void> {
+    const r = this.run!;
+    const px = await this.host.dof.readStill();
+    const png = await encodePng16(px, r.job.width, r.job.height);
+    await r.sink.write(frameName(frame), png);
+  }
+
+  private async finishOk(): Promise<void> {
+    const r = this.run!;
+    try {
+      const msg = await r.sink.finish();
+      await this.end({ ok: true, message: `${r.written} image(s) exportée(s). ${msg}`, written: r.written });
+    } catch (e) {
+      await this.end({ ok: false, cancelled: false, message: `Fin d'export impossible : ${(e as Error).message}` });
+    }
+  }
+
+  private async end(result: ExportEnd): Promise<void> {
+    const r = this.run;
+    if (!r) return;
+    this.run = null;
+    this.host.dof.endStill();
+    this.host.restore();
+    r.done(result);
+  }
+}

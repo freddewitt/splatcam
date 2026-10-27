@@ -51,6 +51,9 @@ export interface LensParams {
   tiltDeg: Tilt;
 }
 
+/** Taille d'une bande de relecture GPU (octets) : sous la limite par défaut des tampons WebGPU (256 Mio). */
+const READ_BAND_BYTES = 128 * 1024 * 1024;
+
 // Passe d'accumulation : somme pondérée, un échantillon à la fois.
 // La partie « masque » est le miroir de `apertureMask` (src/optics/aperture.ts, testé) : garder les deux alignés.
 const ACCUM_WGSL = /* wgsl */ `
@@ -166,6 +169,9 @@ export class DofRenderer {
   private inSubRender = false;
   private presentNow = false;
   private presentOnly = false;
+  /** Export : taille imposée aux cibles et cible de sortie flottante (null = affichage à l'écran). */
+  private fixed: { w: number; h: number } | null = null;
+  private still: { tex: pc.Texture; rt: pc.RenderTarget } | null = null;
   /** Instant du sous-rendu courant et plan d'exposition (lus par l'accumulation). */
   private rs = { u: 0, readout: 0, window: 0, on: false };
   /** Fraction des sous-rendus acceptée par ligne (rolling shutter) : normalise l'exposition. */
@@ -276,7 +282,15 @@ export class DofRenderer {
       return;
     }
     this.repost = false;
+    this.accumulate(budget, true);
+  }
 
+  /**
+   * Rend `budget` sous-rendus et les ajoute à l'accumulateur. `present` : afficher (ou, en export, écrire
+   * dans la cible de sortie) après le dernier.
+   */
+  private accumulate(budget: number, present: boolean): void {
+    const lens = this.lens!;
     const cam = this.camera, cc = cam.camera!;
     const basePos = cam.getPosition().clone();
     const baseRight = cam.right.clone(), baseUp = cam.up.clone();
@@ -321,13 +335,59 @@ export class DofRenderer {
         m: tilted ? tiltWarp([ox, oy], tau) : [1, 0, 0, 1],
         proj: [p00, p11, shX, shY],
       };
-      this.presentNow = i === budget - 1;
+      this.presentNow = present && i === budget - 1;
       this.app.render();
     }
     motion?.restore();
     this.inSubRender = false;
     cc.projectionOffset = new pc.Vec2(0, 0);
     cam.setPosition(basePos);
+  }
+
+  /**
+   * Export : prépare une image finale à la résolution `w`×`h` (hors écran, indépendante du canvas).
+   * Les cibles sont recréées à cette taille ; `stillStep` fait avancer le rendu, `readStill` relit le résultat.
+   */
+  beginStill(w: number, h: number): void {
+    this.endStill();
+    this.fixed = { w, h };
+    this.ensureTargets(w, h);
+    const out = this.makeTarget(w, h, pc.PIXELFORMAT_RGBA32F, 'splatcam-still-out');
+    this.still = out;
+    this.count = 0;
+  }
+
+  /**
+   * Ajoute jusqu'à `budget` sous-rendus (échantillons 0, 1, 2… : le tirage est le même pour toutes les images,
+   * donc l'export est déterministe). Renvoie true quand `samples` échantillons sont accumulés et que
+   * l'image finale (post-traitement compris) est écrite dans la cible de sortie. À appeler dans un tour de boucle.
+   */
+  stillStep(budget: number, samples: number): boolean {
+    if (!this.still || !this.lens) return false;
+    const n = Math.min(budget, samples - this.count);
+    if (n > 0) this.accumulate(n, this.count + n >= samples);
+    return this.count >= samples;
+  }
+
+  /** Relit l'image finale (RGBA flottant, ligne 0 = haut) par bandes, pour rester sous la limite de tampon du GPU. */
+  async readStill(): Promise<Float32Array> {
+    const out = this.still;
+    if (!out) throw new Error('readStill : aucun export en cours');
+    const { width: w, height: h } = out.tex;
+    const px = new Float32Array(w * h * 4);
+    const band = Math.max(1, Math.floor(READ_BAND_BYTES / (w * 16)));
+    for (let y = 0; y < h; y += band) {
+      const rows = Math.min(band, h - y);
+      const data = (await out.tex.read(0, y, w, rows, { immediate: true })) as Float32Array;
+      px.set(data.subarray(0, w * rows * 4), y * w * 4);
+    }
+    return px;
+  }
+
+  /** Libère l'export ; les cibles reprennent la taille du cadre affiché à la prochaine image. */
+  endStill(): void {
+    if (this.still) { this.still.rt.destroy(); this.still.tex.destroy(); this.still = null; }
+    if (this.fixed) { this.fixed = null; this.w = 0; this.h = 0; this.count = 0; }
   }
 
   /** Dans le rendu de l'image : accumule le sous-rendu, puis affiche si c'est le dernier. */
@@ -354,7 +414,7 @@ export class DofRenderer {
       this.post.run(
         this.accum[this.cur].tex, this.w, this.h,
         this.exposure / (this.count * this.centerAcceptance * this.rsAcceptance),
-        lens.aspect, Math.tan((lens.fovV * Math.PI) / 360), this.postParams, this.screenRect,
+        lens.aspect, Math.tan((lens.fovV * Math.PI) / 360), this.postParams, this.screenRect, this.still?.rt ?? null,
       );
     }
   }

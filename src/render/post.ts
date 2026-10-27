@@ -777,10 +777,10 @@ export class PostProcessor {
   }
 
   /**
-   * Applique la chaîne à l'accumulateur et affiche dans `rect` (pixels écran).
+   * Applique la chaîne à l'accumulateur et affiche dans `rect` (pixels écran), ou écrit dans `target` (export).
    * `exposure` : facteur de normalisation des échantillons ; `aspect` et `tanV` : cadre et demi-champ vertical (tan).
    */
-  run(accum: pc.Texture, w: number, h: number, exposure: number, aspect: number, tanV: number, p: PostParams, rect: pc.Vec4): void {
+  run(accum: pc.Texture, w: number, h: number, exposure: number, aspect: number, tanV: number, p: PostParams, rect: pc.Vec4, target: pc.RenderTarget | null = null): void {
     this.ensure(w, h);
     const { scope } = this.device;
     const src = this.src!;
@@ -818,6 +818,8 @@ export class PostProcessor {
     scope.resolve('uSplitS').setValue(st.splitS); scope.resolve('uSplitH').setValue(st.splitH);
     scope.resolve('uMono').setValue(st.mono);
 
-    pc.drawQuadWithShader(this.device, null, this.compShader, rect);
+    // Export : image finale (encodée sRGB, flottante) dans une cible ; sinon affichage dans le cadre à l'écran.
+    if (target) pc.drawQuadWithShader(this.device, target, this.compShader);
+    else pc.drawQuadWithShader(this.device, null, this.compShader, rect);
   }
 }

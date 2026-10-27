@@ -11,6 +11,10 @@ import { dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } 
 import { exposurePlan, gateWeave } from './optics/camera-defects';
 import { sampleShot } from './timeline/shot';
 import { createTimelineUI } from './ui/timeline-ui';
+import { Exporter, type ExportHost } from './export/exporter';
+import { folderSink } from './export/sinks';
+import { createExportUi } from './ui/export-ui';
+import { CAMERA_TRACKS } from './timeline/shot';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -181,8 +185,62 @@ timeline.onChange(() => {
   if (timeline.playing && state.mode === 'explore') { state.mode = 'shoot'; panel.sync(); applyCameras(); }
 });
 
+// Export de séquence : rend le plan image par image à la résolution voulue (voir src/export/).
+let exportSnap: { mode: typeof state.mode; time: number; recording: boolean; focusM: number; focal: number; seed: number; orbit: Orbit } | null = null;
+const exportHost: ExportHost = {
+  dof,
+  prepare() {
+    const o = orbits.shoot;
+    exportSnap = { mode: state.mode, time: timeline.time, recording: timeline.recording, focusM: state.focusM, focal: state.focal, seed: state.post.seed, orbit: { ...o, target: o.target.clone() } };
+    timeline.pause();
+    timeline.recording = false;
+    state.mode = 'shoot';
+    panel.sync();
+    applyCameras();
+  },
+  setFrame(index, t) {
+    timeline.seek(t);
+    timeline.tick(0, performance.now());   // applique le plan à t (pose, map, zoom) avant le premier sous-rendu
+    state.post.seed = index;               // même image = même bruit que l'aperçu
+  },
+  restore() {
+    const snap = exportSnap;
+    exportSnap = null;
+    if (!snap) return;
+    // On rend la main sans rejouer le plan : la caméra revient où l'utilisateur l'avait posée.
+    Object.assign(orbits.shoot, { ...snap.orbit, target: orbits.shoot.target.copy(snap.orbit.target) });
+    state.mode = snap.mode; state.focusM = snap.focusM; state.focal = snap.focal; state.post.seed = snap.seed;
+    timeline.time = snap.time; timeline.recording = snap.recording;
+    timeline.emit();
+    panel.sync();
+    applyCameras();
+  },
+  settings() {
+    // Les valeurs que le plan écrase (pose, map, zoom) ne comptent que si leur piste est vide.
+    const tr = timeline.shot.tracks, o = orbits.shoot;
+    const { mode: _mode, focusM, focal, post, ...rest } = state;
+    return {
+      ...rest, post: { ...post, seed: 0 },
+      focusM: tr.focus.keys.length ? null : focusM,
+      focal: tr.zoom.keys.length ? null : focal,
+      pose: CAMERA_TRACKS.some((id) => tr[id].keys.length) ? null : { yaw: o.yaw, pitch: o.pitch, roll: o.roll, dist: o.dist, target: [o.target.x, o.target.y, o.target.z] },
+      shot: timeline.shot,
+    };
+  },
+};
+let exportUi: ReturnType<typeof createExportUi>;
+const exporter = new Exporter(exportHost, (p) => exportUi.setProgress(p));
+exportUi = createExportUi(document.getElementById('export')!, {
+  exporter: () => exporter,
+  info: () => {
+    const sensor = getSensor(state.sensorId);
+    return { aspect: sensor.width / sensor.height, fps: state.fps, duration: timeline.shot.duration, currentFrame: Math.round(timeline.time * state.fps), samples: state.samples, maxDim: device.maxTextureSize };
+  },
+});
+
 let drag: { x: number; y: number; pan: boolean; moved: number } | null = null;
 canvas.addEventListener('pointerdown', (e) => {
+  if (exporter.running) return;
   drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, moved: 0 };
   canvas.setPointerCapture(e.pointerId);
 });
@@ -193,7 +251,7 @@ canvas.addEventListener('pointerup', (e) => {
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('pointermove', (e) => {
-  if (!drag) return;
+  if (!drag || exporter.running) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   drag.x = e.clientX; drag.y = e.clientY;
   drag.moved += Math.abs(dx) + Math.abs(dy);
@@ -209,13 +267,14 @@ canvas.addEventListener('pointermove', (e) => {
 });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
+  if (exporter.running) return;
   const o = orbits[state.mode];
   o.dist = Math.max(0.05, o.dist * Math.exp(e.deltaY * 0.001));
   applyCameras();
 }, { passive: false });
 
 window.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLElement && e.target.matches('input, select')) return;
+  if (exporter.running || (e.target instanceof HTMLElement && e.target.matches('input, select'))) return;
   if (e.key === 'e') { state.mode = 'explore'; panel.sync(); applyCameras(); }
   if (e.key === 't') { state.mode = 'shoot'; panel.sync(); applyCameras(); }
 });
@@ -315,18 +374,22 @@ window.addEventListener('drop', (e) => {
 // HUD : FPS lissés sur 0,5 s.
 let frames = 0, last = performance.now();
 app.on('update', (dt: number) => {
+  // Export en cours : il tient le rendu (sous-rendus hors écran), ni lecture ni rendu d'aperçu.
+  const exporting = exporter.tick();
   // Lecture / enregistrement de la timeline : seulement en mode tournage (la caméra d'exploration est libre).
-  if (state.mode === 'shoot') {
+  if (exporting) { /* rien */ }
+  else if (state.mode === 'shoot') {
     timeline.tick(dt, performance.now());
     state.post.seed = Math.floor(timeline.time * state.fps + 1e-6); // même image = même bruit
   }
   else if (timeline.playing) timeline.pause();
-  if (state.mode === 'explore') app.renderNextFrame = true;
+  if (exporting) { /* le canvas garde la dernière image affichée */ }
+  else if (state.mode === 'explore') app.renderNextFrame = true;
   else { dof.frame(dirty); dirty = false; }
   frames++;
   const now = performance.now();
   if (now - last >= 500) {
-    const acc = state.mode === 'shoot' ? ` · ${dof.accumulated}/${state.samples} éch.` : '';
+    const acc = exporting ? ' · export' : state.mode === 'shoot' ? ` · ${dof.accumulated}/${state.samples} éch.` : '';
     hud.textContent = `${((frames * 1000) / (now - last)).toFixed(0)} fps · ${device.deviceType}${acc}`;
     frames = 0; last = now;
   }
@@ -334,7 +397,7 @@ app.on('update', (dt: number) => {
 
 // Handle de debug pour les tests visuels (dev uniquement).
 if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).__splatcam = { state, orbits, applyCameras, dof, panel, device, canvas, timeline, shoot };
+  (window as unknown as Record<string, unknown>).__splatcam = { folderSink, exporter, exportHost, state, orbits, applyCameras, dof, panel, device, canvas, timeline, shoot };
 }
 
 app.start();
