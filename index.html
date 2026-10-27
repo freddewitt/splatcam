@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SplatCam</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; overflow: hidden; font: 13px ui-monospace, Menlo, monospace; color: #ddd; }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    #hud { position: fixed; top: 8px; left: 8px; padding: 4px 8px; background: #0008; border-radius: 4px; pointer-events: none; }
+    #hint { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 16px; color: #888; text-align: center; }
+  </style>
+</head>
+<body>
+  <canvas id="app"></canvas>
+  <div id="hud">…</div>
+  <div id="hint">Glisse un fichier .ply / .sog / .splat / .spz ici</div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
