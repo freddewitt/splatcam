@@ -120,5 +120,10 @@
 - Captures : `docs/captures/M7bis.png` (fenêtre avec les commandes ffmpeg après une séquence PNG).
 - Prochaine étape : M8 (projet JSON, raccourcis clavier, interface mobile en HTTPS local, pilotage depuis le téléphone).
 
-## M8
-- Statut : à faire
+## M8. Confort
+- Statut : en cours (lot 1 livré : projet JSON et raccourcis ; lot 2 à faire : mobile HTTPS et télécommande)
+- Décisions (2026-10-27) : téléphone = télécommande du Mac par relais WebSocket local dans le serveur Vite (le Mac fait le rendu) ; scène du projet = référence par nom (on la redépose), LUT et masque de saleté idem.
+- Lot 1, projet JSON : `src/project/project.ts` (pur, 9 tests) : format `splatcam-project` v1, réglages + orbites explore / shoot + plan, graine de bruit exclue, chaque champ validé contre les valeurs par défaut (types, identifiants connus, bornes), version future refusée. Boutons Enregistrer / Ouvrir (`src/ui/project-ui.ts`, File System Access sinon téléchargement), dépôt d'un .json sur la fenêtre, Ctrl/Cmd S / O. Ouvrir un projet avant sa scène : la pose du projet est gardée quand on dépose la scène du même nom.
+- Lot 1, raccourcis : `src/ui/shortcuts.ts` (table + aide « ? », 6 tests) : E T R L K C, flèches (image, Maj = 1 s), Début / Fin, [ ] (tiers de diaph), X (export), Ctrl/Cmd S / O ; ignorés dans un champ et pendant un export. Espace et Suppr restent dans `timeline-ui.ts`.
+- Mesuré (Chrome headless) : aller-retour réglages / pose / plan identique (focale, f/, map, bloom, orbite, 2 clés zoom), JSON invalide et fichier étranger refusés sans toucher à l'état, `state.post` toujours partagé avec le rendu. Capture : `docs/captures/M8-raccourcis.png`.
+- Approximatif : pas d'annulation de l'ouverture d'un projet ; tiers de diaph arrondis (3 tiers depuis f/2.8 = f/3.9, pas f/4).

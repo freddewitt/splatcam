@@ -16,6 +16,11 @@ import { folderSink } from './export/sinks';
 import { pngWriter } from './export/writers';
 import { createExportUi } from './ui/export-ui';
 import { CAMERA_TRACKS } from './timeline/shot';
+import { getStock } from './optics/film-stock';
+import { parseProject, projectFileName, serializeProject, type OrbitData, type Project, type ProjectSettings } from './project/project';
+import { createProjectUi } from './ui/project-ui';
+import { createShortcuts } from './ui/shortcuts';
+import { DIRT_SIZE } from './render/post';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -274,11 +279,69 @@ canvas.addEventListener('wheel', (e) => {
   applyCameras();
 }, { passive: false });
 
-window.addEventListener('keydown', (e) => {
-  if (exporter.running || (e.target instanceof HTMLElement && e.target.matches('input, select'))) return;
-  if (e.key === 'e') { state.mode = 'explore'; panel.sync(); applyCameras(); }
-  if (e.key === 't') { state.mode = 'shoot'; panel.sync(); applyCameras(); }
+// Projet JSON : réglages, orbites et plan (la scène est une référence par nom, voir src/project/).
+const settingsOf = (): ProjectSettings => {
+  const { mode: _mode, ...rest } = state;
+  return structuredClone(rest) as unknown as ProjectSettings;
+};
+const DEFAULT_SETTINGS = settingsOf();
+const orbitData = (o: Orbit): OrbitData => ({ yaw: o.yaw, pitch: o.pitch, roll: o.roll, dist: o.dist, target: [o.target.x, o.target.y, o.target.z] });
+const DEFAULT_ORBIT = orbitData(newOrbit());
+let sceneName = '';
+/** Nom de la scène du projet ouvert tant qu'elle n'est pas redéposée : la pose du projet prime sur le cadrage automatique. */
+let awaitingScene: string | null = null;
+
+function applyProject(p: Project) {
+  const { post, aperture, ...scalars } = p.settings;
+  const seed = state.post.seed;
+  // `state.post` est partagé avec le rendu (dof.postParams) : mise à jour en place, pas de remplacement.
+  Object.assign(state, scalars);
+  Object.assign(state.aperture, aperture);
+  Object.assign(state.post, post, { seed });
+  // Looks et masque de saleté sont des références par nom : non rechargés, on revient au réglage neutre.
+  state.lutName = ''; state.dirtName = '';
+  dof.postProcessor.setLut(null);
+  dof.postProcessor.setDirt(null, DIRT_SIZE);
+  dof.postProcessor.setStock(getStock(state.post.stock) ?? null);
+  dof.setPost(state.post);
+  for (const k of ['explore', 'shoot'] as const) {
+    const { target, ...rest } = p.orbits[k];
+    Object.assign(orbits[k], rest);
+    orbits[k].target.set(target[0], target[1], target[2]);
+  }
+  timeline.pause();
+  timeline.recording = false;
+  timeline.setShot(p.shot);
+  awaitingScene = p.scene.name && p.scene.name !== sceneName ? p.scene.name : null;
+  panel.sync();
+  applyCameras();
+}
+
+const projectUi = createProjectUi(document.getElementById('project')!, {
+  snapshot: () => ({
+    text: serializeProject({ sceneName, settings: settingsOf(), orbits: { explore: orbitData(orbits.explore), shoot: orbitData(orbits.shoot) }, shot: timeline.shot }),
+    fileName: projectFileName(sceneName),
+  }),
+  load(text) {
+    if (exporter.running) throw new Error('Export en cours : projet non ouvert.');
+    const { project, warnings } = parseProject(text, { settings: DEFAULT_SETTINGS, orbit: DEFAULT_ORBIT });
+    applyProject(project);
+    if (awaitingScene) warnings.unshift(`Scène « ${awaitingScene} » à déposer dans la fenêtre.`);
+    return warnings;
+  },
 });
+
+createShortcuts({
+  timeline,
+  locked: () => exporter.running,
+  setMode(mode) { if (state.mode !== mode) { state.mode = mode; panel.sync(); applyCameras(); } },
+  fps: () => state.fps,
+  fNumber: () => state.fNumber,
+  setFNumber(f) { state.fNumber = f; state.presetId = ''; panel.sync(); applyCameras(); },
+  saveProject: () => { void projectUi.save(); },
+  openProject: () => projectUi.open(),
+  openExport: () => (document.querySelector('#export .open') as HTMLElement | null)?.click(),
+}, document.getElementById('shortcuts')!);
 
 // Mise au point par clic (picking sur les centres de splats pondérés par l'opacité).
 let pickData: PickData | null = null;
@@ -333,13 +396,17 @@ async function loadFile(file: File) {
   asset.once('load', () => {
     current?.destroy();
     current = new pc.Entity(file.name);
+    sceneName = file.name;
+    const keepPose = awaitingScene === file.name;   // projet ouvert avant la scène : on garde sa pose
+    awaitingScene = null;
     current.addComponent('gsplat', { asset });
     app.root.addChild(current);
     // Cadrage robuste : la AABB brute est faussée par les splats aberrants,
     // on utilise les percentiles 2 à 98 % des centres.
     const centers = (asset.resource as pc.GSplatResource | null)?.centers;
     pickData = asset.resource ? buildPickData(asset.resource as pc.GSplatResource) : null;
-    if (centers && centers.length >= 3) {
+    if (keepPose) { panel.sync(); applyCameras(); }
+    else if (centers && centers.length >= 3) {
       const n = centers.length / 3;
       const lo = new pc.Vec3(), hi = new pc.Vec3();
       const axis = new Float32Array(n);
@@ -369,7 +436,8 @@ window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => {
   e.preventDefault();
   const f = e.dataTransfer?.files[0];
-  if (f) void loadFile(f);
+  if (!f) return;
+  if (f.name.toLowerCase().endsWith('.json')) void projectUi.openFile(f); else void loadFile(f);
 });
 
 // HUD : FPS lissés sur 0,5 s.
@@ -398,7 +466,7 @@ app.on('update', (dt: number) => {
 
 // Handle de debug pour les tests visuels (dev uniquement).
 if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).__splatcam = { pngWriter, folderSink, exporter, exportHost, state, orbits, applyCameras, dof, panel, device, canvas, timeline, shoot };
+  (window as unknown as Record<string, unknown>).__splatcam = { pngWriter, folderSink, projectUi, applyProject, exporter, exportHost, state, orbits, applyCameras, dof, panel, device, canvas, timeline, shoot };
 }
 
 app.start();

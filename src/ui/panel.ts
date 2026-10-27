@@ -358,6 +358,13 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     focalNum.value = String(state.focal);
     focalRange.value = String(Math.min(300, state.focal));
     scale.value = String(state.metersPerUnit);
+    // Ouverture hors des diaphs entiers (tiers de diaph au clavier, projet) : option temporaire à sa place.
+    fnum.querySelector('[data-custom]')?.remove();
+    if (![...fnum.options].some((o) => parseFloat(o.value) === state.fNumber)) {
+      const o = el<HTMLOptionElement>('option', { value: String(state.fNumber), 'data-custom': '' }, `f/${state.fNumber}`);
+      const after = [...fnum.options].find((x) => parseFloat(x.value) > state.fNumber);
+      fnum.insertBefore(o, after ?? null);
+    }
     fnum.value = String(state.fNumber);
     focus.value = String(+state.focusM.toFixed(3));
     samples.value = String(state.samples);

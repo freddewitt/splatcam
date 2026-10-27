@@ -52,6 +52,19 @@
     #export textarea { width: 100%; box-sizing: border-box; background: #111; color: #9c9; border: 1px solid #555; border-radius: 4px; font: 11px ui-monospace, Menlo, monospace; resize: vertical; }
     #export .cmd button { padding: 4px; min-height: 28px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
     #export button:disabled { opacity: .4; }
+    #project { position: fixed; top: 76px; left: 8px; width: 200px; display: grid; gap: 4px; }
+    #project .row { display: flex; gap: 4px; }
+    #project button { flex: 1; padding: 4px 8px; min-height: 30px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
+    #project .status { color: #9c9; font-size: 11px; white-space: pre-line; background: #000b; border-radius: 4px; }
+    #project .status:empty { display: none; }
+    #project .status.err { color: #f88; }
+    #shortcuts { position: fixed; inset: 0; background: #000a; display: grid; place-items: center; z-index: 11; }
+    #shortcuts.hidden { display: none; }
+    #shortcuts .card { max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box; padding: 14px; background: #181818; border: 1px solid #444; border-radius: 8px; display: grid; gap: 8px; }
+    #shortcuts h3 { margin: 0; font-size: 14px; }
+    #shortcuts td { padding: 2px 10px 2px 0; }
+    #shortcuts kbd { background: #333; border: 1px solid #555; border-radius: 3px; padding: 1px 6px; color: #fff; }
+    #shortcuts button { padding: 8px; min-height: 36px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
     #hint { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 16px; color: #888; text-align: center; }
   </style>
 </head>
@@ -61,6 +74,8 @@
   <div id="panel"></div>
   <div id="timeline"></div>
   <div id="export"></div>
+  <div id="project"></div>
+  <div id="shortcuts" class="hidden"></div>
   <div id="hint">Glisse un fichier .ply / .sog / .splat / .spz ici</div>
   <script type="module" src="/src/main.ts"></script>
 </body>
