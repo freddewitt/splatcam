@@ -4,7 +4,6 @@ import { FOCUS_MARKS, FOCUS_MIN_M, dioptersFromMeters, focalFromZoom, metersFrom
 import { parseCube, type Lut3D } from '../optics/lut';
 import type { PostParams, ToneMap } from '../render/post';
 import { FILM_STOCKS, getStock, type FilmStock } from '../optics/film-stock';
-import { LUT_INPUT_LABELS, type LutInput } from '../optics/log-gamut';
 import { LENS_PRESETS, getPreset, presetAperture } from '../optics/lens-preset';
 
 export type Mode = 'explore' | 'shoot';
@@ -221,9 +220,6 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     sync();
     hooks.post();
   });
-  const lutInputSel = el<HTMLSelectElement>('select');
-  for (const [v, l] of Object.entries(LUT_INPUT_LABELS)) lutInputSel.append(el<HTMLOptionElement>('option', { value: v }, l));
-  lutInputSel.addEventListener('change', () => { state.post = { ...state.post, lutInput: lutInputSel.value as LutInput }; hooks.post(); });
   const isoSel = el<HTMLSelectElement>('select');
   for (const v of [0, 100, 200, 400, 800, 1600, 3200, 6400, 12800]) isoSel.append(el<HTMLOptionElement>('option', { value: String(v) }, v === 0 ? 'Aucun bruit' : `ISO ${v}`));
   isoSel.addEventListener('change', () => { state.post = { ...state.post, iso: parseInt(isoSel.value, 10) }; hooks.post(); });
@@ -265,7 +261,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     post('Taille du grain (px)', 'grainSize', 0.8, 4, 0.1),
   ];
   const lutRow = el('div', { class: 'field' });
-  lutRow.append(el('span', {}, 'Look (.cube)'), lutName, lutFile, el('span', {}, 'Entrée attendue par la LUT'), lutInputSel, lutClear);
+  lutRow.append(el('span', {}, 'Look (.cube, LUT 3D Rec.709)'), lutName, lutFile, lutClear);
   const lutAmount = post('Intensité du look', 'lutAmount', 0, 1, 0.01);
   const title = (t: string) => el('div', { class: 'sep' }, t);
 
@@ -316,7 +312,6 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     fpsSel.value = String(state.fps);
     toneSel.value = state.post.toneMap;
     stockSel.value = state.post.stock;
-    lutInputSel.value = state.post.lutInput;
     isoSel.value = String(state.post.iso);
     lutName.textContent = state.lutName || 'aucun';
     ring.value = String(dioptersFromMeters(state.focusM));

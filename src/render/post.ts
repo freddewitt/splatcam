@@ -7,12 +7,11 @@
 // 8 à la montée, seuil doux au premier niveau) : une pour le bloom (seuil et étendue propres), une pour la
 // halation (seuil propre, rayons larges) ; (B) composition plein cadre vers l'écran : distorsion, aberration
 // chromatique, vignettage, bruit capteur, ÉMULSION (courbes par canal + couleur) ou tone mapping, LUT
-// (en image affichée ou en log constructeur), grain de pellicule.
+// (appliquée à l'image Rec.709 affichée), grain de pellicule.
 
 import * as pc from 'playcanvas';
 import { atlasWidth, lutToAtlas, type Lut3D } from '../optics/lut';
 import { stockUniforms, type FilmStock } from '../optics/film-stock';
-import { LOG_CONSTANTS, lutInputSpec, type LutInput } from '../optics/log-gamut';
 
 export type ToneMap = 'none' | 'reinhard' | 'aces';
 const TONE_ID: Record<ToneMap, number> = { none: 0, reinhard: 1, aces: 2 };
@@ -43,9 +42,8 @@ export interface PostParams {
   grain: number;
   /** Taille du grain en pixels. */
   grainSize: number;
-  /** Intensité du look (LUT chargée) : 0 à 1, et espace d'entrée attendu par la LUT. */
+  /** Intensité du look (LUT Rec.709 chargée) : 0 à 1. */
   lutAmount: number;
-  lutInput: LutInput;
   /** Émulsion (id de optics/film-stock) ; '' = tone mapping seul. Voir PostProcessor.setStock. */
   stock: string;
   /** Graine du bruit (numéro d'image) : même image = même bruit, export reproductible. */
@@ -56,7 +54,7 @@ export const DEFAULT_POST: PostParams = {
   exposureEv: 0, highlightGain: 1, toneMap: 'aces',
   bloom: 0, bloomThreshold: 1, bloomRadius: 0.6, halation: 0, halationThreshold: 1, halationTint: [1, 0.3, 0.1],
   vignetteNatural: 0, vignetteOptical: 0, distortion: 0, chromaticAberration: 0,
-  iso: 0, grain: 0, grainSize: 1.5, lutAmount: 1, lutInput: 'display', stock: '', seed: 0,
+  iso: 0, grain: 0, grainSize: 1.5, lutAmount: 1, stock: '', seed: 0,
 };
 
 const LEVELS = 6;
@@ -136,7 +134,7 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
 
 // Composition. Les formules de vignettage, distorsion, bruit et tone mapping sont celles de
 // optics/lens-effects.ts (testées) ; l'émulsion est celle de optics/film-stock.ts (filmLook, testée) ;
-// le look est celui de optics/lut.ts (applyLut) et l'encodage F-Log celui de optics/log-gamut.ts.
+// le look est celui de optics/lut.ts (applyLut).
 const COMP_WGSL = /* wgsl */ `
 var srcTex: texture_2d<f32>;
 var srcTexSampler: sampler;
@@ -166,12 +164,6 @@ uniform uLumB: vec4f;
 uniform uSplitS: vec4f;   // dominante des ombres
 uniform uSplitH: vec4f;   // dominante des hautes lumières, w = 1 : émulsion active
 uniform uMono: vec4f;     // poids R V B, w = 1 : monochrome
-// LUT en entrée log constructeur : matrice Rec.709 → gamut (3 lignes), constantes a b c d / e f cut1, w = 1 : actif
-uniform uM0: vec4f;
-uniform uM1: vec4f;
-uniform uM2: vec4f;
-uniform uLogA: vec4f;
-uniform uLogB: vec4f;
 varying uv0: vec2f;
 
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
@@ -284,14 +276,6 @@ fn filmLook(col: vec3f) -> vec3f {
   return clamp(c, vec3f(0.0), vec3f(1.0));
 }
 
-// --- F-Log / F-Log2 (miroir de logEncode, optics/log-gamut.ts) ---
-fn logEncode(x: vec3f) -> vec3f {
-  let a = uniform.uLogA.x; let b = uniform.uLogA.y; let c = uniform.uLogA.z; let d = uniform.uLogA.w;
-  let e = uniform.uLogB.x; let f = uniform.uLogB.y; let cut1 = uniform.uLogB.z;
-  let hi = c * (log(a * x + vec3f(b)) / 2.302585) + vec3f(d);
-  return select(hi, e * x + vec3f(f), x < vec3f(cut1));
-}
-
 fn lutAt(r: i32, g: i32, b: i32, n: i32) -> vec3f { return textureLoad(lutTex, vec2i(r, g + b * n), 0).rgb; }
 
 // Interpolation trilinéaire dans la bande (N × N²) : miroir de applyLut (optics/lut.ts).
@@ -346,16 +330,8 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   if (uniform.uSplitH.w > 0.5) { o = filmLook(col); }               // l'émulsion produit déjà une valeur affichée
   else { o = srgbOetf(toneMap(col, uniform.uE.x)); }
 
-  // Look (LUT) : sur l'image affichée, ou sur la scène encodée en log constructeur (LUT officielles).
-  if (uniform.uE.w > 0.5 && uniform.uE.y > 0.0) {
-    let n = i32(uniform.uE.z);
-    if (uniform.uLogB.w > 0.5) {
-      let g = max(vec3f(dot(uniform.uM0.xyz, col), dot(uniform.uM1.xyz, col), dot(uniform.uM2.xyz, col)), vec3f(0.0));
-      o = mix(o, applyLut(clamp(logEncode(g), vec3f(0.0), vec3f(1.0)), n), uniform.uE.y);
-    } else {
-      o = mix(o, applyLut(o, n), uniform.uE.y);
-    }
-  }
+  // Look (LUT 3D Rec.709) : appliqué à l'image affichée.
+  if (uniform.uE.w > 0.5 && uniform.uE.y > 0.0) { o = mix(o, applyLut(o, i32(uniform.uE.z)), uniform.uE.y); }
 
   // Grain de pellicule : dans la densité (valeur affichée), gaussien, au plus fort dans les médiums.
   if (uniform.uD.y > 0.0) {
@@ -512,16 +488,6 @@ export class PostProcessor {
     scope.resolve('uSplitS').setValue(st.splitS); scope.resolve('uSplitH').setValue(st.splitH);
     scope.resolve('uMono').setValue(st.mono);
 
-    // Entrée de LUT en log constructeur : matrice Rec.709 → gamut et constantes de la courbe.
-    const spec = this.lutSize > 0 ? lutInputSpec(p.lutInput) : null;
-    if (spec) {
-      const m = spec.matrix, k = LOG_CONSTANTS[spec.curve];
-      scope.resolve('uM0').setValue([m[0], m[1], m[2], 0]); scope.resolve('uM1').setValue([m[3], m[4], m[5], 0]);
-      scope.resolve('uM2').setValue([m[6], m[7], m[8], 0]);
-      scope.resolve('uLogA').setValue([k.a, k.b, k.c, k.d]); scope.resolve('uLogB').setValue([k.e, k.f, k.cut1, 1]);
-    } else {
-      for (const n of ['uM0', 'uM1', 'uM2', 'uLogA', 'uLogB']) scope.resolve(n).setValue([0, 0, 0, 0]);
-    }
     pc.drawQuadWithShader(this.device, null, this.compShader, rect);
   }
 }
