@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultBitrateMbps, ffmpegCommands, rgbaToBytes } from './video-plan';
+import { defaultBitrateMbps, ffmpegRate, ffmpegCommands, rgbaToBytes } from './video-plan';
 
 describe('rgbaToBytes', () => {
   it('arrondit, écrête et force l\'alpha', () => {
@@ -30,5 +30,13 @@ describe('ffmpegCommands', () => {
   });
   it('la cadence suit le réglage', () => {
     expect(ffmpegCommands({ fps: 24 })[0].command).toContain('-framerate 24');
+  });
+});
+
+describe('cadence ffmpeg', () => {
+  it('23,976 en fraction exacte, cadences entières inchangées', () => {
+    expect(ffmpegRate(23.976)).toBe('24000/1001');
+    expect(ffmpegRate(25)).toBe('25');
+    expect(ffmpegRate(60)).toBe('60');
   });
 });

@@ -49,10 +49,12 @@ export type ExportEnd = { ok: true; message: string; written: number } | { ok: f
 
 /** Sous-rendus par tour de boucle : assez pour avancer vite, assez peu pour garder l'interface vivante. */
 const STEP_SAMPLES = 4;
+/** Images au plus pour laisser le tri des splats rattraper la pose d'une image exportée. */
+const SETTLE_MAX = 30;
 
 export class Exporter {
   private run: {
-    job: ExportJob; writer: FrameWriter; pending: number[]; i: number; started: boolean;
+    job: ExportJob; writer: FrameWriter; pending: number[]; i: number; started: boolean; settle: number;
     phase: 'render' | 'write'; written: number; cancel: boolean; done: (e: ExportEnd) => void;
   } | null = null;
 
@@ -95,7 +97,7 @@ export class Exporter {
     this.host.prepare();
     this.host.dof.beginStill(job.width, job.height);
     return new Promise<ExportEnd>((resolve) => {
-      this.run = { job, writer, pending, i: 0, started: false, phase: 'render', written: 0, cancel: false, done: resolve };
+      this.run = { job, writer, pending, i: 0, started: false, settle: -1, phase: 'render', written: 0, cancel: false, done: resolve };
     });
   }
 
@@ -112,8 +114,14 @@ export class Exporter {
     try {
       if (!r.started) {
         this.host.setFrame(frame, frameTime(frame, r.job.fps));
-        dof.reset();
         r.started = true;
+        r.settle = 0;
+      }
+      // Attente du tri des splats pour cette pose (au plus SETTLE_MAX images) : sans elle, les premiers
+      // échantillons utiliseraient l'ordre de la pose précédente, différemment selon le timing.
+      if (r.settle >= 0) {
+        if (dof.settle() || ++r.settle >= SETTLE_MAX) { r.settle = -1; dof.reset(); }
+        return true;
       }
       finished = dof.stillStep(STEP_SAMPLES, r.job.samples);
     } catch (e) {

@@ -360,6 +360,9 @@ uniform uLumB: vec4f;
 uniform uSplitS: vec4f;   // dominante des ombres
 uniform uSplitH: vec4f;   // dominante des hautes lumières, w = 1 : émulsion active
 uniform uMono: vec4f;     // poids R V B, w = 1 : monochrome
+// Aides à l'écran (jamais dans l'export) : zébras, peaking, repères de cadrage.
+uniform uAid: vec4f;      // 1 = zébras, seuil des zébras (valeur affichée), force du peaking (0 = aucun), repères (bits : 1 tiers, 2 zones de sécurité, 4 centre)
+uniform uAid2: vec4f;     // rapport du masque de format (0 = aucun), opacité du masque, rapport du cadre
 varying uv0: vec2f;
 
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
@@ -543,10 +546,80 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
     let w = clamp(4.0 * y * (1.0 - y), 0.12, 1.0);
     o = clamp(o + vec3f(g * uniform.uD.y * 0.07 * w), vec3f(0.0), vec3f(1.0));
   }
+
+  // ---------- Aides à l'écran (affichage seulement) ----------
+  let pxf = uv * dims;
+  // Peaking : contraste local (gradient du log de luminance) fort = détail net. Mesuré sur la source avant
+  // tone mapping, aux coordonnées distordues, donc il suit la mise au point et non le look.
+  if (uniform.uAid.z > 0.0) {
+    let t = 1.0 / dims;
+    let lx0 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs - vec2f(t.x, 0.0), 0.0).rgb, LUMA) + 1e-3);
+    let lx1 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs + vec2f(t.x, 0.0), 0.0).rgb, LUMA) + 1e-3);
+    let ly0 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs - vec2f(0.0, t.y), 0.0).rgb, LUMA) + 1e-3);
+    let ly1 = log2(dot(textureSampleLevel(srcTex, srcTexSampler, uvs + vec2f(0.0, t.y), 0.0).rgb, LUMA) + 1e-3);
+    let gm = abs(lx1 - lx0) + abs(ly1 - ly0);
+    let k = smoothstep(1.2 / uniform.uAid.z, 1.8 / uniform.uAid.z, gm);
+    o = mix(o, vec3f(1.0, 0.18, 0.12), k);
+  }
+  // Zébras : rayures diagonales sur les zones affichées au-dessus du seuil (surexposition).
+  if (uniform.uAid.x > 0.5 && dot(o, LUMA) >= uniform.uAid.y && fract((pxf.x + pxf.y) / 10.0) < 0.5) {
+    o = mix(o, vec3f(0.05), 0.75);
+  }
+  // Masque de format (2.39, 1.85…) : bandes assombries, les repères suivent la zone utile.
+  var r0 = vec2f(0.0);
+  var r1 = vec2f(1.0);
+  let ma = uniform.uAid2.x;
+  if (ma > 0.0) {
+    let fa = uniform.uAid2.z;
+    if (ma > fa) { let hh = 0.5 * fa / ma; r0.y = 0.5 - hh; r1.y = 0.5 + hh; }
+    else { let hw = 0.5 * ma / fa; r0.x = 0.5 - hw; r1.x = 0.5 + hw; }
+    if (any(uv < r0) || any(uv > r1)) { o = o * (1.0 - uniform.uAid2.y); }
+  }
+  let bits = u32(uniform.uAid.w);
+  if (bits != 0u) {
+    let a = r0 * dims;
+    let sz = (r1 - r0) * dims;
+    let q = (pxf - a) / sz;   // 0..1 dans la zone utile
+    var line = 0.0;
+    let lw = 0.75 / sz;       // demi-épaisseur : 1,5 px
+    if ((bits & 1u) != 0u) {
+      line = max(line, f32(abs(q.x - 1.0 / 3.0) < lw.x || abs(q.x - 2.0 / 3.0) < lw.x || abs(q.y - 1.0 / 3.0) < lw.y || abs(q.y - 2.0 / 3.0) < lw.y));
+    }
+    if ((bits & 2u) != 0u) {
+      // Zones de sécurité action (93 %) et titres (90 %).
+      for (var i = 0; i < 2; i++) {
+        let m = select(0.05, 0.035, i == 0);
+        let inside = all(q > vec2f(m) - lw) && all(q < vec2f(1.0 - m) + lw);
+        let edge = abs(q.x - m) < lw.x || abs(q.x - (1.0 - m)) < lw.x || abs(q.y - m) < lw.y || abs(q.y - (1.0 - m)) < lw.y;
+        line = max(line, f32(inside && edge) * 0.7);
+      }
+    }
+    if ((bits & 4u) != 0u) {
+      let c = abs(pxf - (a + sz * 0.5));
+      line = max(line, f32((c.x < 0.75 && c.y < 12.0) || (c.y < 0.75 && c.x < 12.0)));
+    }
+    if (all(q >= vec2f(0.0)) && all(q <= vec2f(1.0))) { o = mix(o, vec3f(0.95), line * 0.55); }
+  }
   output.color = vec4f(o, 1.0);
   return output;
 }
 `;
+
+/** Aides à l'écran : zébras, peaking, repères et masque de format. Hors projet et hors export. */
+export interface DisplayAids {
+  zebra: boolean;
+  /** Seuil des zébras, valeur affichée 0–1 (0,95 ≈ 95 IRE). */
+  zebraLevel: number;
+  /** Force du peaking, 0 = désactivé. */
+  peaking: number;
+  thirds: boolean;
+  safe: boolean;
+  center: boolean;
+  /** Rapport du masque de format (2.39, 1.85…), 0 = aucun. */
+  maskAspect: number;
+  maskOpacity: number;
+}
+export const NO_AIDS: DisplayAids = { zebra: false, zebraLevel: 0.95, peaking: 0, thirds: false, safe: false, center: false, maskAspect: 0, maskOpacity: 0.85 };
 
 interface Target { tex: pc.Texture; rt: pc.RenderTarget }
 
@@ -613,6 +686,9 @@ export class PostProcessor {
   }
 
   get hasLut(): boolean { return this.lutSize > 0; }
+
+  /** Aides à l'écran (jamais appliquées à l'export). */
+  aids: DisplayAids = { ...NO_AIDS };
 
   /** Émulsion active (courbes par canal et couleur) ; null = tone mapping seul. */
   setStock(stock: FilmStock | null): void { this.stock = stock; }
@@ -827,6 +903,11 @@ export class PostProcessor {
     scope.resolve('uLumA').setValue(st.lumA); scope.resolve('uLumB').setValue(st.lumB);
     scope.resolve('uSplitS').setValue(st.splitS); scope.resolve('uSplitH').setValue(st.splitH);
     scope.resolve('uMono').setValue(st.mono);
+
+    const a = target ? NO_AIDS : this.aids;
+    const bits = (a.thirds ? 1 : 0) | (a.safe ? 2 : 0) | (a.center ? 4 : 0);
+    scope.resolve('uAid').setValue([a.zebra ? 1 : 0, a.zebraLevel, a.peaking, bits]);
+    scope.resolve('uAid2').setValue([a.maskAspect, a.maskOpacity, aspect, 0]);
 
     // Export : image finale (encodée sRGB, flottante) dans une cible ; sinon affichage dans le cadre à l'écran.
     if (target) pc.drawQuadWithShader(this.device, target, this.compShader);

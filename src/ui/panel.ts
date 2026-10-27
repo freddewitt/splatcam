@@ -1,17 +1,22 @@
-// Panneau de réglages : cinq onglets (Caméra, Objectif, Mouvement, Image, Optique), groupes repliables.
+// Panneau de réglages : six onglets (Caméra, Objectif, Mouvement, Image, Optique, Moniteur), groupes repliables.
 // Chaque réglage numérique = curseur + valeur modifiable au clavier ; double-clic sur le libellé = valeur par défaut ;
 // un point ambre signale un réglage qui s'écarte du défaut. Les échelles perceptives (focale, ouverture, map,
 // échantillons) sont logarithmiques ou en dioptries, comme sur une vraie caméra.
 
 import { getSensor, rad2deg, sensorFov, SENSOR_FORMATS, type Fov } from '../optics/sensor';
 import { DEFAULT_APERTURE, type ApertureShape } from '../optics/aperture';
+import { dofLimits, hyperfocal } from '../optics/dof';
 import { FOCUS_MARKS, FOCUS_MIN_M, dioptersFromMeters, metersFromDiopters } from '../timeline/shot';
 import { parseCube, type Lut3D } from '../optics/lut';
-import { DEFAULT_POST, DIRT_SIZE, type PostParams, type ToneMap } from '../render/post';
+import { DEFAULT_POST, DIRT_SIZE, NO_AIDS, type DisplayAids, type PostParams, type ToneMap } from '../render/post';
 import { FILM_STOCKS, getStock, type FilmStock } from '../optics/film-stock';
-import { LENS_PRESETS, getPreset, presetAperture } from '../optics/lens-preset';
+import { LENS_FAMILIES, LENS_PRESETS, getPreset, presetAperture, presetFocalLabel, presetHasFocal, presetPost } from '../optics/lens-preset';
 
 export type Mode = 'explore' | 'shoot';
+
+/** Placement de la scène (modèle) dans le monde : translation (unités de scène), rotation (°, ordre X Y Z), échelle. */
+export interface SceneTransform { x: number; y: number; z: number; rx: number; ry: number; rz: number; scale: number }
+export const IDENTITY_TRANSFORM: SceneTransform = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, scale: 1 };
 
 export interface PanelState {
   mode: Mode;
@@ -44,7 +49,12 @@ export interface PanelState {
   dirtName: string;
   /** Preset d'objectif appliqué en dernier ('' = réglage manuel). */
   presetId: string;
+  /** Placement du modèle. */
+  sceneTransform: SceneTransform;
 }
+
+/** Pose de la caméra de tournage (unités de scène, degrés). */
+export interface CameraPose { x: number; y: number; z: number; pan: number; tilt: number; roll: number }
 
 export interface Panel {
   /** Met à jour les valeurs affichées (FOV, distance à la cible). */
@@ -53,14 +63,26 @@ export interface Panel {
   sync(): void;
 }
 
-/** Rappels de l'interface vers le rendu : paramètres de post modifiés (sans refaire les sous-rendus), look chargé. */
-export interface PanelHooks { post(): void; lut(lut: Lut3D | null): void; stock(stock: FilmStock | null): void; dirt(bytes: Uint8Array | null, size: number): void }
+/** Rappels de l'interface vers le rendu et l'application. */
+export interface PanelHooks {
+  /** Paramètres de post modifiés (ré-affichage sans refaire les sous-rendus). */
+  post(): void;
+  lut(lut: Lut3D | null): void;
+  stock(stock: FilmStock | null): void;
+  dirt(bytes: Uint8Array | null, size: number): void;
+  /** Pose de la caméra de tournage : lecture et écriture (partielle). */
+  pose?: { get(): CameraPose; set(v: Partial<CameraPose>): void };
+  /** Aides à l'écran (zébras, peaking, repères). */
+  aids?(a: DisplayAids): void;
+  /** Résolution d'aperçu : facteur sur la taille en points de l'écran (0,5 / 1 / devicePixelRatio). */
+  quality?(ratio: number): void;
+}
 
 /** Valeurs par défaut des réglages hors post / ouverture (pour le double-clic et le repère « modifié »). */
 const DEFAULTS = { focal: 35, fNumber: 2.8, focusM: 5, samples: 64, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, shutterAngle: 180, readoutMs: 0, weave: 0 };
 
 /** Ouvertures au tiers de diaph (valeurs gravées usuelles). */
-export const F_STOPS = [1, 1.1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.5, 2.8, 3.2, 3.5, 4, 4.5, 5, 5.6, 6.3, 7.1, 8, 9, 10, 11, 13, 14, 16, 18, 20, 22];
+export const F_STOPS = [0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.5, 2.8, 3.2, 3.5, 4, 4.5, 5, 5.6, 6.3, 7.1, 8, 9, 10, 11, 13, 14, 16, 18, 20, 22];
 /** Indice du diaph gravé le plus proche (en diaphs, donc en log). */
 export const nearestStop = (f: number): number => {
   let best = 0;
@@ -68,7 +90,14 @@ export const nearestStop = (f: number): number => {
   return best;
 };
 
-const STREAK_TINTS: [string, string, number[]][] = [['blue', 'Bleu', [0.35, 0.55, 1]], ['amber', 'Ambre', [1, 0.65, 0.25]], ['neutral', 'Neutre', [1, 1, 1]]];
+/** Cadences proposées (i/s). 23,976 = 24 000 / 1 001 (NTSC). */
+export const FPS_CHOICES = [23.976, 24, 25, 30, 48, 50, 60];
+
+const SWATCHES: Record<'streak' | 'halation', [string, number[]][]> = {
+  streak: [['Bleu', [0.35, 0.55, 1]], ['Ambre', [1, 0.65, 0.25]], ['Neutre', [1, 1, 1]], ['Violet', [0.7, 0.45, 1]]],
+  halation: [['Rouge', [1, 0.3, 0.1]], ['Orange', [1, 0.5, 0.2]], ['Rose', [1, 0.35, 0.45]], ['Neutre', [1, 1, 1]]],
+};
+const MASKS: [number, string][] = [[0, 'Aucun'], [2.39, '2.39 (scope)'], [2, '2.00 (univisium)'], [1.85, '1.85 (flat)'], [1.66, '1.66'], [1.5, '3:2'], [1.333, '4:3'], [1, '1:1'], [0.5625, '9:16 (vertical)']];
 
 const el = <T extends HTMLElement>(tag: string, attrs: Record<string, string> = {}, text = ''): T => {
   const e = document.createElement(tag) as T;
@@ -77,12 +106,16 @@ const el = <T extends HTMLElement>(tag: string, attrs: Record<string, string> = 
   return e;
 };
 
+const hex = (c: number[]) => '#' + c.slice(0, 3).map((v) => Math.round(Math.min(Math.max(v, 0), 1) * 255).toString(16).padStart(2, '0')).join('');
+const fromHex = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+
 const ICONS: Record<string, string> = {
   camera: '<path d="M3 7h3l2-2h8l2 2h3v12H3z"/><circle cx="12" cy="13" r="4"/>',
   lens: '<circle cx="12" cy="12" r="9"/><path d="M12 3l3.5 6M21 12h-7M16.5 19.8L13 14M7.5 19.8L11 14M3 12h7M8.5 4.2L12 10"/>',
   motion: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   image: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 16l5-5 4 4 3-3 6 6"/>',
   optics: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+  monitor: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M7 8h3M7 8v3M17 13h-3M17 13v-3"/>',
 };
 
 let uid = 0;
@@ -90,6 +123,10 @@ const storage = {
   get(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } },
   set(k: string, v: string): void { try { localStorage.setItem(k, v); } catch { /* navigation privée */ } },
 };
+
+/** Réglages enregistrés par l'utilisateur (« Mes réglages ») : objectif, capteur, obturateur, look. */
+type UserPreset = { name: string; settings: Partial<PanelState> };
+const USER_KEYS = ['sensorId', 'focal', 'fNumber', 'aperture', 'shiftX', 'shiftY', 'tiltX', 'tiltY', 'shutterAngle', 'readoutMs', 'weave', 'post', 'presetId'] as const;
 
 export function createPanel(state: PanelState, onChange: () => void, hooks: PanelHooks): Panel {
   const root = document.getElementById('panel')!;
@@ -137,8 +174,8 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     lo?: number; hi?: number;
     /** Arrondi de la valeur saisie ou glissée. */
     round?(v: number): number;
-    /** true : ne fait pas quitter le preset d'objectif. */
-    keepPreset?: boolean;
+    /** true : ne fait pas quitter le preset d'objectif ; fonction : décide selon la valeur. */
+    keepPreset?: boolean | ((v: number) => boolean);
     notify?(): void;
     hint?: string;
     ticks?: [number, string][];
@@ -156,13 +193,16 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
       const v = o.get(), x = Math.min(Math.max(to(v), o.min), o.max);
       range.value = String(x);
       range.style.setProperty('--p', `${((x - o.min) / (o.max - o.min)) * 100}%`);
+      range.setAttribute('aria-valuetext', fmt(v));
       if (document.activeElement !== val) val.value = fmt(v);
       wrap.classList.toggle('changed', o.def !== undefined && Math.abs(v - o.def) > 1e-9);
     };
     const commit = (v: number) => {
       if (!Number.isFinite(v)) { upd(); return; }
-      o.set(round(Math.min(Math.max(v, o.lo ?? from(o.min)), o.hi ?? from(o.max))));
-      if (!o.keepPreset) state.presetId = '';
+      const nv = round(Math.min(Math.max(v, o.lo ?? from(o.min)), o.hi ?? from(o.max)));
+      o.set(nv);
+      const keep = typeof o.keepPreset === 'function' ? o.keepPreset(nv) : o.keepPreset;
+      if (!keep) state.presetId = '';
       sync();
       (o.notify ?? onChange)();
     };
@@ -194,11 +234,17 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     return wrap;
   };
 
-  /** Menu déroulant avec libellé. */
-  const select = (label: string, items: [string, string][], get: () => string, set: (v: string) => void, hint?: string) => {
+  /** Menu déroulant avec libellé ; `items` peut regrouper les options (optgroup). */
+  const select = (label: string, items: ([string, string] | [string, [string, string][]])[], get: () => string, set: (v: string) => void, hint?: string) => {
     const id = `ctl${uid++}`;
     const s = el<HTMLSelectElement>('select', { id });
-    for (const [v, t] of items) s.append(el<HTMLOptionElement>('option', { value: v }, t));
+    for (const [v, t] of items) {
+      if (Array.isArray(t)) {
+        const g = el<HTMLOptGroupElement>('optgroup', { label: v });
+        for (const [gv, gt] of t) g.append(el<HTMLOptionElement>('option', { value: gv }, gt));
+        s.append(g);
+      } else s.append(el<HTMLOptionElement>('option', { value: v }, t));
+    }
     s.addEventListener('change', () => set(s.value));
     syncers.push(() => { s.value = get(); });
     const wrap = el('div', { class: 'ctl' });
@@ -207,21 +253,64 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     return { wrap, select: s };
   };
 
-  /** Boutons segmentés (choix court : cadence). */
+  /** Boutons segmentés (choix courts : cadence, interrupteurs). */
   const segmented = (label: string, items: [string, string][], get: () => string, set: (v: string) => void) => {
     const wrap = el('div', { class: 'ctl' });
-    const seg = el('div', { class: 'seg', role: 'group', 'aria-label': label });
-    seg.style.display = 'flex';
+    const seg = el('div', { class: 'seg wrap', role: 'group', 'aria-label': label });
     const btns = items.map(([v, t]) => {
       const b = el<HTMLButtonElement>('button', { type: 'button' }, t);
-      b.style.flex = '1';
       b.addEventListener('click', () => { set(v); sync(); });
       seg.append(b);
       return [v, b] as const;
     });
-    syncers.push(() => { for (const [v, b] of btns) b.classList.toggle('on', v === get()); });
-    const h = el('div', { class: 'head' }); h.append(el('span', {}, label));
-    wrap.append(h, seg);
+    syncers.push(() => { for (const [v, b] of btns) { b.classList.toggle('on', v === get()); b.setAttribute('aria-pressed', String(v === get())); } });
+    if (label) { const h = el('div', { class: 'head' }); h.append(el('span', {}, label)); wrap.append(h); }
+    wrap.append(seg);
+    return wrap;
+  };
+
+  /** Interrupteur (case stylée). */
+  const toggle = (label: string, get: () => boolean, set: (v: boolean) => void) => {
+    const id = `ctl${uid++}`;
+    const wrap = el('label', { class: 'switch', for: id });
+    const box = el<HTMLInputElement>('input', { type: 'checkbox', id });
+    box.addEventListener('change', () => { set(box.checked); sync(); });
+    syncers.push(() => { box.checked = get(); });
+    wrap.append(box, el('span', {}, label));
+    return wrap;
+  };
+
+  /** Champs numériques compacts en grille (pose, placement). */
+  const numGrid = (fields: { label: string; get(): number; set(v: number): void; step: number; digits: number }[]) => {
+    const grid = el('div', { class: 'grid3' });
+    for (const f of fields) {
+      const id = `ctl${uid++}`;
+      const cell = el('label', { class: 'cell', for: id });
+      const input = el<HTMLInputElement>('input', { type: 'number', class: 'num', id, step: String(f.step) });
+      input.addEventListener('change', () => { const v = parseFloat(input.value); if (Number.isFinite(v)) f.set(v); sync(); });
+      syncers.push(() => { if (document.activeElement !== input) input.value = String(+f.get().toFixed(f.digits)); });
+      cell.append(el('span', {}, f.label), input);
+      grid.append(cell);
+    }
+    return grid;
+  };
+
+  /** Couleur libre + pastilles prédéfinies. */
+  const colorPicker = (label: string, swatches: [string, number[]][], get: () => number[], set: (c: number[]) => void) => {
+    const id = `ctl${uid++}`;
+    const wrap = el('div', { class: 'ctl' });
+    const input = el<HTMLInputElement>('input', { type: 'color', id, class: 'color' });
+    input.addEventListener('input', () => { set(fromHex(input.value)); hooks.post(); sync(); });
+    const row = el('div', { class: 'sub' });
+    for (const [name, c] of swatches) {
+      const b = el<HTMLButtonElement>('button', { type: 'button', class: 'swatch', title: name, 'aria-label': name });
+      b.style.background = hex(c);
+      b.addEventListener('click', () => { set([...c]); hooks.post(); sync(); });
+      row.append(b);
+    }
+    row.append(input);
+    syncers.push(() => { input.value = hex(get()); });
+    wrap.append(head(label, id, el('span')), row);
     return wrap;
   };
 
@@ -259,6 +348,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   const lens = (label: string, k: keyof ApertureShape, min: number, max: number, step: number, fmt?: (v: number) => string, hint?: string) =>
     slider({ label, min, max, step, ...ap(k), fmt, hint });
   const scalar = (k: keyof typeof DEFAULTS) => ({ get: () => state[k] as number, set: (v: number) => { (state as unknown as Record<string, number>)[k] = v; }, def: DEFAULTS[k] });
+  const preset = () => getPreset(state.presetId);
 
   // ---------- Modes (dans la barre du haut) ----------
   const modesHost = document.getElementById('modes') ?? root;
@@ -270,16 +360,18 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   });
 
   // ---------- Onglet Caméra ----------
-  const sensor = select('Capteur', SENSOR_FORMATS.map((s) => [s.id, `${s.label} · ${s.width}×${s.height} mm`]), () => state.sensorId, (v) => { state.sensorId = v; onChange(); });
+  const sensor = select('Capteur', SENSOR_FORMATS.map((s) => [s.id, `${s.label} · ${s.width}×${s.height} mm`] as [string, string]), () => state.sensorId, (v) => { state.sensorId = v; onChange(); });
   const focal = slider({
     label: 'Focale', min: Math.log(4), max: Math.log(300), step: 0.001, ...scalar('focal'),
     to: Math.log, from: Math.exp, lo: 4, hi: 800, round: (v) => Math.round(v * 10) / 10,
     fmt: (v) => `${+v.toFixed(1)} mm`, ticks: [[12, '12'], [24, '24'], [50, '50'], [100, '100'], [200, '200']],
+    // Une focale de la série (ou dans la plage du zoom) garde l'objectif choisi.
+    keepPreset: (v) => { const p = preset(); return !!p && presetHasFocal(p, v); },
   });
   const fnum = slider({
     label: 'Ouverture', min: 0, max: F_STOPS.length - 1, step: 1, ...scalar('fNumber'),
     to: nearestStop, from: (i) => F_STOPS[Math.round(i)], lo: 0.7, hi: 64, round: (v) => Math.round(v * 100) / 100,
-    fmt: (v) => `f/${+v.toFixed(2)}`, ticks: [[1.4, '1.4'], [2.8, '2.8'], [5.6, '5.6'], [11, '11'], [22, '22']],
+    fmt: (v) => `f/${+v.toFixed(2)}`, ticks: [[1, '1'], [2, '2'], [4, '4'], [8, '8'], [16, '16']], keepPreset: true,
   });
   const focus = slider({
     label: 'Mise au point', min: 0, max: 1 / FOCUS_MIN_M, step: 0.002, ...scalar('focusM'),
@@ -288,28 +380,43 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     ticks: FOCUS_MARKS.filter((m) => [Infinity, 5, 2, 1, 0.5, 0.3].includes(m)).map((m) => [m, Number.isFinite(m) ? String(m) : '∞']),
     hint: 'Clic dans l\'image en vue Tournage : mise au point sur la surface visée.',
   });
+  // Avertissements liés à l'objectif choisi : ouverture plus grande que la série, mise au point trop proche.
+  const lensWarn = el('div', { class: 'warn' });
+  syncers.push(() => {
+    const p = preset(), w: string[] = [];
+    if (p?.maxAperture && state.fNumber < p.maxAperture - 1e-6) w.push(`Plus ouvert que l'objectif (ouverture max. f/${p.maxAperture}).`);
+    if (p?.minFocusM && state.focusM < p.minFocusM) w.push(`Sous la distance minimale de mise au point (${p.minFocusM} m).`);
+    lensWarn.textContent = w.join(' ');
+  });
   const readout = el('div', { class: 'readout' });
-  const scale = el<HTMLInputElement>('input', { type: 'number', class: 'num', min: '0.0001', step: '0.01', id: `ctl${uid++}` });
-  scale.addEventListener('change', () => {
-    const v = parseFloat(scale.value);
-    if (Number.isFinite(v) && v > 0) { state.metersPerUnit = v; onChange(); } else scale.value = String(state.metersPerUnit);
+  const dofOut = el('div', { class: 'readout' });
+  syncers.push(() => {
+    // Profondeur de champ (lentille mince), CoC admissible = diagonale du capteur / 1500.
+    const s = getSensor(state.sensorId), coc = Math.hypot(s.width, s.height) / 1500;
+    const H = hyperfocal(state.focal, state.fNumber, coc) / 1000;
+    const { near, far } = dofLimits(state.focal, state.fNumber, coc, state.focusM * 1000);
+    const m = (v: number) => (!Number.isFinite(v) || v > 5000 ? '∞' : v >= 100 ? `${v.toFixed(0)} m` : `${v.toFixed(2)} m`);
+    dofOut.textContent = `Net de     ${m(near / 1000)}\nà          ${m(far / 1000)}\nProfondeur ${m((far - near) / 1000)}\nHyperfocale ${m(H)}\nCoC        ${(coc * 1000).toFixed(0)} µm`;
   });
-  syncers.push(() => { if (document.activeElement !== scale) scale.value = String(state.metersPerUnit); });
-  const scaleCtl = el('div', { class: 'ctl' });
-  scaleCtl.append(head('Échelle de la scène (m par unité)', scale.id, el('span')), scale, el('div', { class: 'hint' }, 'Calibre la physique : f/1.4 à 2 m doit valoir f/1.4 à 2 m.'));
-  const samples = slider({
-    label: 'Échantillons à l\'arrêt', min: 0, max: 10, step: 0.01, ...scalar('samples'),
-    to: Math.log2, from: (x) => 2 ** x, lo: 1, hi: 1024, round: Math.round, fmt: (v) => String(v), keepPreset: true,
-    ticks: [[1, '1'], [8, '8'], [64, '64'], [512, '512']], hint: 'Qualité de l\'aperçu une fois la caméra immobile.',
-  });
+  // Position numérique de la caméra de tournage (mètres, degrés).
+  const poseGrid = hooks.pose ? (() => {
+    const P = hooks.pose!;
+    const mpu = () => state.metersPerUnit;
+    const f = (label: string, k: keyof CameraPose, metric: boolean) => ({
+      label, step: metric ? 0.01 : 0.5, digits: metric ? 3 : 1,
+      get: () => P.get()[k] * (metric ? mpu() : 1),
+      set: (v: number) => P.set({ [k]: metric ? v / mpu() : v }),
+    });
+    return numGrid([f('X (m)', 'x', true), f('Y (m)', 'y', true), f('Z (m)', 'z', true), f('Pan °', 'pan', false), f('Tilt °', 'tilt', false), f('Roll °', 'roll', false)]);
+  })() : null;
   const pageCamera = [
-    group('optique', 'Prise de vue', [sensor.wrap, focal, fnum, focus], true, () => getSensor(state.sensorId).label),
-    group('champ', 'Champ de vision', [readout]),
-    group('scene', 'Scène et aperçu', [scaleCtl, samples], true),
+    group('optique', 'Prise de vue', [sensor.wrap, focal, fnum, focus, lensWarn], true, () => getSensor(state.sensorId).label),
+    group('netteté', 'Netteté et champ', [dofOut, readout], true),
+    ...(poseGrid ? [group('pose', 'Position de la caméra', [poseGrid, el('div', { class: 'hint' }, 'Caméra de tournage. Souris : glisser = tourner, Maj + glisser = déplacer, molette = avancer.')], false)] : []),
   ];
 
   // ---------- Onglet Objectif ----------
-  const preset = select('Preset d\'objectif', [['', 'Réglage manuel'], ...LENS_PRESETS.map((p) => [p.id, p.name] as [string, string])], () => state.presetId, (v) => {
+  const presetSel = select('Objectif', [['', 'Réglage manuel'], ...LENS_FAMILIES.map((fam) => [fam, LENS_PRESETS.filter((p) => p.family === fam).map((p) => [p.id, p.name] as [string, string])] as [string, [string, string][]])], () => state.presetId, (v) => {
     const p = getPreset(v);
     state.presetId = v;
     if (p) {
@@ -320,14 +427,72 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
       state.shiftY = p.shiftMm?.y ?? 0;
       state.tiltX = p.tiltDeg?.x ?? 0;
       state.tiltY = p.tiltDeg?.y ?? 0;
+      Object.assign(state.post, presetPost(p));   // défauts de l'objectif (en place : partagé avec le rendu)
+      hooks.post();
     }
     sync();
     onChange();
-  }, 'Règle focale, ouverture, bokeh et bascules d\'un coup. Tout réglage manuel quitte le preset.');
+  });
+  const lensInfo = el('div', { class: 'lensinfo' });
+  const focalChips = el('div', { class: 'seg wrap' });
+  syncers.push(() => {
+    const p = preset();
+    lensInfo.replaceChildren();
+    focalChips.replaceChildren();
+    if (!p) { lensInfo.append(el('div', { class: 'hint' }, 'Choisis un objectif : il règle focale, ouverture, bokeh et défauts optiques d\'un coup. Les objectifs nommés reproduisent leur caractère de façon approchée.')); return; }
+    const facts = [presetFocalLabel(p), p.maxAperture ? `f/${p.maxAperture} max.` : '', p.minFocusM ? `MAP min. ${p.minFocusM} m` : ''].filter(Boolean).join(' · ');
+    lensInfo.append(el('div', { class: 'facts' }, facts));
+    if (p.description) lensInfo.append(el('div', { class: 'hint' }, p.description));
+    const pick = (mm: number) => { state.focal = mm; sync(); onChange(); };
+    const chips = p.zoom ? [p.zoom.min, ...[24, 35, 50, 85, 135, 200].filter((f) => f > p.zoom!.min && f < p.zoom!.max), p.zoom.max] : p.focals ?? [];
+    if (chips.length > 1) for (const mm of chips) {
+      const b = el<HTMLButtonElement>('button', { type: 'button' }, String(mm));
+      b.classList.toggle('on', Math.abs(state.focal - mm) < 0.05);
+      b.addEventListener('click', () => pick(mm));
+      focalChips.append(b);
+    }
+  });
+  // Mes réglages : enregistrés dans le navigateur.
+  const loadUser = (): UserPreset[] => { try { return JSON.parse(storage.get('splatcam.userPresets') ?? '[]') as UserPreset[]; } catch { return []; } };
+  const saveUser = (list: UserPreset[]) => storage.set('splatcam.userPresets', JSON.stringify(list));
+  const userName = el<HTMLInputElement>('input', { type: 'text', class: 'num', placeholder: 'Nom (ex. « Scope chaud nuit »)', 'aria-label': 'Nom du réglage' });
+  const userSave = el<HTMLButtonElement>('button', { type: 'button', class: 'btn' }, 'Enregistrer');
+  const userList = el('div', { class: 'userlist' });
+  const renderUser = () => {
+    userList.replaceChildren();
+    const list = loadUser();
+    if (!list.length) userList.append(el('div', { class: 'hint' }, 'Objectif, capteur, obturateur, look et effets en un clic. Gardés dans ce navigateur.'));
+    list.forEach((u, i) => {
+      const row = el('div', { class: 'urow' });
+      const apply = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost' }, u.name);
+      apply.addEventListener('click', () => {
+        const { post: up, aperture: ua, ...rest } = u.settings;
+        Object.assign(state, rest);
+        if (ua) state.aperture = { ...DEFAULT_APERTURE, ...ua };
+        if (up) Object.assign(state.post, up, { seed: state.post.seed });
+        hooks.stock(getStock(state.post.stock) ?? null);
+        hooks.post(); sync(); onChange();
+      });
+      const del = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost x', title: 'Supprimer', 'aria-label': `Supprimer ${u.name}` }, '×');
+      del.addEventListener('click', () => { const l = loadUser(); l.splice(i, 1); saveUser(l); renderUser(); });
+      row.append(apply, del);
+      userList.append(row);
+    });
+  };
+  userSave.addEventListener('click', () => {
+    const name = userName.value.trim() || `Réglage ${loadUser().length + 1}`;
+    const settings: Record<string, unknown> = {};
+    for (const k of USER_KEYS) settings[k] = structuredClone(state[k]);
+    const list = loadUser().filter((u) => u.name !== name);
+    list.push({ name, settings: settings as Partial<PanelState> });
+    saveUser(list); userName.value = ''; renderUser();
+  });
+  renderUser();
+  const userRow = el('div', { class: 'sub' }); userRow.append(userName, userSave);
   const pageLens = [
-    group('preset', 'Objectif', [preset.wrap], true, () => (state.presetId ? '' : 'manuel')),
+    group('preset', 'Objectif', [presetSel.wrap, lensInfo, focalChips], true, () => preset()?.family ?? 'manuel'),
     group('diaph', 'Diaphragme et bokeh', [
-      lens('Lames', 'blades', 0, 16, 1, (v) => (v < 3 ? 'cercle' : String(v))),
+      lens('Lames', 'blades', 0, 20, 1, (v) => (v < 3 ? 'cercle' : String(v))),
       lens('Arrondi des lames', 'roundness', 0, 1, 0.05),
       lens('Rotation des lames', 'rotationDeg', -90, 90, 1, (v) => `${v}°`),
       lens('Squeeze anamorphique', 'squeeze', 1, 2, 0.05, (v) => `${v.toFixed(2)}×`),
@@ -345,12 +510,13 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
       slider({ label: 'Tilt', min: -10, max: 10, step: 0.1, ...scalar('tiltY'), fmt: (v) => `${v.toFixed(1)}°`, hint: '+ : netteté plus proche en bas (Scheimpflug).' }),
       slider({ label: 'Swing', min: -10, max: 10, step: 0.1, ...scalar('tiltX'), fmt: (v) => `${v.toFixed(1)}°`, hint: '+ : netteté plus proche à droite.' }),
     ], false, () => (state.shiftX || state.shiftY || state.tiltX || state.tiltY ? 'actif' : '')),
+    group('mes', 'Mes réglages', [userRow, userList], false),
   ];
 
   // ---------- Onglet Mouvement ----------
   const pageMotion = [
     group('obturateur', 'Obturateur', [
-      segmented('Cadence', [['24', '24 i/s'], ['25', '25 i/s'], ['30', '30 i/s']], () => String(state.fps), (v) => { state.fps = parseInt(v, 10); onChange(); }),
+      segmented('Cadence (i/s)', FPS_CHOICES.map((f) => [String(f), String(f)]), () => String(state.fps), (v) => { state.fps = parseFloat(v); onChange(); }),
       slider({ label: 'Angle d\'obturateur', min: 0, max: 360, step: 1, ...scalar('shutterAngle'), keepPreset: true,
         fmt: (v) => (v === 0 ? 'aucun flou' : `${v}° · 1/${Math.round((360 / v) * state.fps)} s`), hint: '180° = flou de mouvement « cinéma ».' }),
     ], true),
@@ -368,7 +534,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     if (s) {
       state.post.grain = s.grain?.amount ?? 0; state.post.grainSize = s.grain?.size ?? 1.5;
       state.post.halation = s.halation?.amount ?? 0; state.post.halationThreshold = s.halation?.threshold ?? 1;
-      state.post.halationTint = s.halation?.tint ?? [1, 0.3, 0.1];
+      state.post.halationTint = [...(s.halation?.tint ?? [1, 0.3, 0.1])];
     }
     hooks.stock(s);
     sync();
@@ -376,7 +542,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   });
   for (const o of stock.select.options) { const s = getStock(o.value); if (s) o.title = s.description; }
   const tone = select('Tone mapping', [['aces', 'ACES (cinéma)'], ['reinhard', 'Reinhard'], ['none', 'Aucun (écrêté)']], () => state.post.toneMap, (v) => { state.post.toneMap = v as ToneMap; hooks.post(); }, 'Utilisé quand aucune émulsion n\'est choisie.');
-  const iso = select('Bruit capteur', [0, 100, 200, 400, 800, 1600, 3200, 6400, 12800].map((v) => [String(v), v === 0 ? 'Aucun bruit' : `ISO ${v}`]), () => String(state.post.iso), (v) => { state.post.iso = parseInt(v, 10); hooks.post(); });
+  const iso = select('Bruit capteur', [0, 100, 200, 400, 800, 1600, 3200, 6400, 12800].map((v) => [String(v), v === 0 ? 'Aucun bruit' : `ISO ${v}`] as [string, string]), () => String(state.post.iso), (v) => { state.post.iso = parseInt(v, 10); hooks.post(); });
   const lut = filePicker('Look (.cube, LUT 3D Rec.709)', '.cube', () => state.lutName || 'aucun', async (f) => {
     try { hooks.lut(parseCube(await f.text())); state.lutName = f.name; } catch (e) { hooks.lut(null); state.lutName = ''; throw e; }
   }, () => { hooks.lut(null); state.lutName = ''; }, 'Retirer');
@@ -391,10 +557,6 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   ];
 
   // ---------- Onglet Optique ----------
-  const streak = select('Teinte du streak', STREAK_TINTS.map(([id, l]) => [id, l]), () => (STREAK_TINTS.find((t) => t[2].join() === state.post.streakTint.join()) ?? STREAK_TINTS[0])[0], (v) => {
-    state.post.streakTint = STREAK_TINTS.find((x) => x[0] === v)![2];
-    hooks.post();
-  });
   const dirt = filePicker('Masque de saleté (image)', 'image/*', () => state.dirtName || 'procédural', async (f) => {
     // Image → luminance 512×512 (clair = sale).
     const bmp = await createImageBitmap(f);
@@ -413,13 +575,15 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   const pageOptics = [
     group('bloom', 'Bloom et halation', [
       post('Bloom', 'bloom', 0, 1, 0.01), post('Seuil du bloom', 'bloomThreshold', 0.2, 4, 0.05), post('Étendue du bloom', 'bloomRadius', 0.3, 0.8, 0.01),
-      post('Halation', 'halation', 0, 1, 0.01, undefined, 'Halo rouge des lumières, diffusé dans la couche anti-halo.'), post('Seuil de halation', 'halationThreshold', 0.5, 3, 0.05),
+      post('Halation', 'halation', 0, 1, 0.01, undefined, 'Halo des lumières, diffusé dans la couche anti-halo.'), post('Seuil de halation', 'halationThreshold', 0.5, 3, 0.05),
+      colorPicker('Teinte de la halation', SWATCHES.halation, () => state.post.halationTint, (c) => { state.post.halationTint = c; }),
     ], true, () => on(state.post.bloom + state.post.halation)),
     group('flares', 'Flares', [
       post('Seuil des flares', 'flareThreshold', 0.5, 6, 0.05),
       post('Étoile du diaphragme', 'starburst', 0, 2, 0.01), post('Longueur de l\'étoile', 'starburstLength', 0.05, 0.6, 0.01),
       post('Pointes de l\'étoile', 'starburstSpikes', 0, 16, 1, (v) => (v === 0 ? 'selon les lames' : String(v))),
-      post('Streak anamorphique', 'streak', 0, 2, 0.01), post('Longueur du streak', 'streakLength', 0, 1, 0.01), streak.wrap,
+      post('Streak anamorphique', 'streak', 0, 2, 0.01), post('Longueur du streak', 'streakLength', 0, 1, 0.01),
+      colorPicker('Teinte du streak', SWATCHES.streak, () => state.post.streakTint, (c) => { state.post.streakTint = c; }),
       post('Ghosts', 'ghosts', 0, 2, 0.01), post('Nombre de ghosts', 'ghostCount', 1, 6, 1),
       post('Lens dirt', 'dirt', 0, 2, 0.01), dirt,
     ], false, () => on(state.post.starburst + state.post.streak + state.post.ghosts + state.post.dirt)),
@@ -430,13 +594,72 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
     ], false, () => on(state.post.vignetteNatural + state.post.vignetteOptical + Math.abs(state.post.distortion) + state.post.chromaticAberration)),
   ];
 
+  // ---------- Onglet Moniteur (aperçu, aides, scène) ----------
+  // Aides et qualité : préférences d'écran, gardées dans le navigateur (hors projet, jamais dans l'export).
+  const aids: DisplayAids = (() => { try { return { ...NO_AIDS, ...JSON.parse(storage.get('splatcam.aids') ?? '{}') }; } catch { return { ...NO_AIDS }; } })();
+  const pushAids = () => { storage.set('splatcam.aids', JSON.stringify(aids)); hooks.aids?.(aids); };
+  const aidSlider = (label: string, k: 'zebraLevel' | 'peaking' | 'maskOpacity', min: number, max: number, step: number, fmt: (v: number) => string, hint?: string) =>
+    slider({ label, min, max, step, get: () => aids[k], set: (v) => { aids[k] = v; }, def: NO_AIDS[k], fmt, keepPreset: true, notify: pushAids, hint });
+  const quality = segmented('Résolution d\'aperçu', [['0.5', '50 %'], ['1', '100 %'], ['retina', 'Retina']], () => storage.get('splatcam.quality') ?? '1', (v) => {
+    storage.set('splatcam.quality', v);
+    hooks.quality?.(v === 'retina' ? window.devicePixelRatio || 2 : parseFloat(v));
+  });
+  const samples = slider({
+    label: 'Échantillons à l\'arrêt', min: 0, max: 10, step: 0.01, ...scalar('samples'),
+    to: Math.log2, from: (x) => 2 ** x, lo: 1, hi: 1024, round: Math.round, fmt: (v) => String(v), keepPreset: true,
+    ticks: [[1, '1'], [8, '8'], [64, '64'], [512, '512']], hint: 'Qualité de l\'aperçu une fois la caméra immobile.',
+  });
+  const mask = select('Masque de format', MASKS.map(([v, l]) => [String(v), l] as [string, string]), () => String(aids.maskAspect), (v) => { aids.maskAspect = parseFloat(v); pushAids(); sync(); });
+  // Placement de la scène (modèle) : position, rotation, échelle, enregistrés avec le projet.
+  const st = state.sceneTransform;
+  const tf = (label: string, k: keyof SceneTransform, metric: boolean) => ({
+    label, step: metric ? 0.05 : 1, digits: metric ? 3 : 1,
+    get: () => st[k] * (metric ? state.metersPerUnit : 1),
+    set: (v: number) => { st[k] = metric ? v / state.metersPerUnit : v; onChange(); },
+  });
+  const scaleSl = slider({ label: 'Échelle du modèle', min: Math.log(0.01), max: Math.log(100), step: 0.001, get: () => st.scale, set: (v) => { st.scale = v; }, def: 1,
+    to: Math.log, from: Math.exp, lo: 0.001, hi: 1000, round: (v) => Math.round(v * 1000) / 1000, fmt: (v) => `×${+v.toFixed(3)}`, keepPreset: true, ticks: [[0.1, '×0.1'], [1, '×1'], [10, '×10']] });
+  const rotSl = (label: string, k: 'rx' | 'ry' | 'rz') => slider({ label, min: -180, max: 180, step: 1, get: () => st[k], set: (v) => { st[k] = v; }, def: 0, fmt: (v) => `${+v.toFixed(1)}°`, keepPreset: true });
+  const resetTf = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost' }, 'Remettre à zéro');
+  resetTf.addEventListener('click', () => { Object.assign(st, IDENTITY_TRANSFORM); sync(); onChange(); });
+  const flip = el<HTMLButtonElement>('button', { type: 'button', class: 'btn ghost', title: 'Beaucoup de scènes exportées sont à l\'envers (axe Y vers le bas)' }, 'Retourner (X 180°)');
+  flip.addEventListener('click', () => { st.rx = st.rx >= 0 ? st.rx - 180 : st.rx + 180; sync(); onChange(); });
+  const tfRow = el('div', { class: 'sub' }); tfRow.append(flip, resetTf);
+  const scale = el<HTMLInputElement>('input', { type: 'number', class: 'num', min: '0.0001', step: '0.01', id: `ctl${uid++}` });
+  scale.addEventListener('change', () => {
+    const v = parseFloat(scale.value);
+    if (Number.isFinite(v) && v > 0) { state.metersPerUnit = v; sync(); onChange(); } else scale.value = String(state.metersPerUnit);
+  });
+  syncers.push(() => { if (document.activeElement !== scale) scale.value = String(state.metersPerUnit); });
+  const scaleCtl = el('div', { class: 'ctl' });
+  scaleCtl.append(head('Échelle de la scène (m par unité)', scale.id, el('span')), scale, el('div', { class: 'hint' }, 'Calibre la physique : f/1.4 à 2 m doit valoir f/1.4 à 2 m.'));
+  const pageMonitor = [
+    group('apercu', 'Aperçu', [quality, samples], true),
+    group('aides', 'Aides à l\'exposition et au point', [
+      toggle('Zébras (surexposition)', () => aids.zebra, (v) => { aids.zebra = v; pushAids(); }),
+      aidSlider('Seuil des zébras', 'zebraLevel', 0.7, 1, 0.01, (v) => `${Math.round(v * 100)} %`),
+      aidSlider('Focus peaking', 'peaking', 0, 2, 0.05, (v) => (v === 0 ? 'désactivé' : `×${v.toFixed(2)}`), 'Surligne en rouge les détails nets.'),
+    ], true, () => (aids.zebra || aids.peaking > 0 ? 'actif' : '')),
+    group('cadrage', 'Repères de cadrage', [
+      toggle('Tiers', () => aids.thirds, (v) => { aids.thirds = v; pushAids(); }),
+      toggle('Zones de sécurité (93 / 90 %)', () => aids.safe, (v) => { aids.safe = v; pushAids(); }),
+      toggle('Croix centrale', () => aids.center, (v) => { aids.center = v; pushAids(); }),
+      mask.wrap, aidSlider('Opacité du masque', 'maskOpacity', 0, 1, 0.05, (v) => `${Math.round(v * 100)} %`),
+    ], true, () => (aids.thirds || aids.safe || aids.center || aids.maskAspect ? 'actif' : '')),
+    group('placement', 'Placement de la scène', [
+      numGrid([tf('X (m)', 'x', true), tf('Y (m)', 'y', true), tf('Z (m)', 'z', true)]),
+      rotSl('Rotation X', 'rx'), rotSl('Rotation Y', 'ry'), rotSl('Rotation Z', 'rz'), scaleSl, tfRow, scaleCtl,
+    ], false, () => (st.x || st.y || st.z || st.rx || st.ry || st.rz || st.scale !== 1 ? 'modifié' : '')),
+  ];
+
   // ---------- Onglets ----------
   const pages: [string, string, string, HTMLElement[]][] = [
     ['camera', 'Caméra', ICONS.camera, pageCamera],
     ['lens', 'Objectif', ICONS.lens, pageLens],
-    ['motion', 'Mouvement', ICONS.motion, pageMotion],
+    ['motion', 'Cadence', ICONS.motion, pageMotion],
     ['image', 'Image', ICONS.image, pageImage],
     ['optics', 'Optique', ICONS.optics, pageOptics],
+    ['monitor', 'Moniteur', ICONS.monitor, pageMonitor],
   ];
   const tabs = el('div', { class: 'tabs', role: 'tablist' });
   const holder = el('div', { class: 'pages' });
@@ -467,7 +690,7 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
   // ---------- Barre d'objectif (haut) ----------
   const bar = document.getElementById('lensbar');
   const chip = (k: string) => { const s = el('span'); s.append(el('em', {}, k)); const v = document.createTextNode(''); s.append(v); bar?.append(s); return v; };
-  const chips = bar ? { focal: chip(''), f: chip(''), focus: chip('map'), fov: chip('H'), sensor: chip('') } : null;
+  const chips = bar ? { focal: chip(''), f: chip(''), focus: chip('map'), fov: chip('H'), lens: chip('') } : null;
 
   function sync() {
     for (const b of modeBtns) b.classList.toggle('on', b.dataset.mode === state.mode);
@@ -479,16 +702,20 @@ export function createPanel(state: PanelState, onChange: () => void, hooks: Pane
       chips.f.textContent = `f/${+state.fNumber.toFixed(2)}`;
       chips.focus.textContent = state.focusM >= 500 ? '∞' : `${state.focusM.toFixed(2)} m`;
       chips.fov.textContent = `${rad2deg(sensorFov(s, state.focal).h).toFixed(1)}°`;
-      chips.sensor.textContent = s.label;
+      chips.lens.textContent = preset()?.name ?? s.label;
     }
   }
   sync();
+  // Préférences d'écran appliquées au démarrage.
+  hooks.aids?.(aids);
+  const q = storage.get('splatcam.quality');
+  if (q && q !== '1') hooks.quality?.(q === 'retina' ? window.devicePixelRatio || 2 : parseFloat(q));
 
   return {
     sync,
     show(fov, targetDistM, extra = '') {
       const d = (r: number) => `${rad2deg(r).toFixed(1)}°`;
-      readout.textContent = `Horizontal ${d(fov.h)}\nVertical   ${d(fov.v)}\nDiagonale  ${d(fov.d)}\nCible à    ${targetDistM.toFixed(2)} m${extra ? '\n' + extra : ''}`;
+      readout.textContent = `Champ H    ${d(fov.h)}\nChamp V    ${d(fov.v)}\nDiagonale  ${d(fov.d)}\nCible à    ${targetDistM.toFixed(2)} m${extra ? '\n' + extra : ''}`;
       sync();
     },
   };

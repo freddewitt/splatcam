@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "mediabunny": "^1.62.1",
-    "playcanvas": "^2.23.3"
+    "playcanvas": "^2.23.3",
+    "uqr": "^0.1.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

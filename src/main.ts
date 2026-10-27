@@ -1,6 +1,6 @@
 import * as pc from 'playcanvas';
 import { DEFAULT_SENSOR_ID, getSensor, rad2deg, sensorFov } from './optics/sensor';
-import { createPanel, type PanelState } from './ui/panel';
+import { createPanel, IDENTITY_TRANSFORM, type PanelState } from './ui/panel';
 import { DEFAULT_POST, DIRT_SIZE } from './render/post';
 import { DofRenderer } from './render/dof-renderer';
 import { pickDepth, type PickData } from './render/pick';
@@ -15,6 +15,7 @@ import { folderSink } from './export/sinks';
 import { pngWriter } from './export/writers';
 import { createExportUi } from './ui/export-ui';
 import { getStock } from './optics/film-stock';
+import { getPreset, presetHasFocal } from './optics/lens-preset';
 import { parseProject, projectFileName, serializeProject, type OrbitData, type Project, type ProjectSettings } from './project/project';
 import { createProjectUi } from './ui/project-ui';
 import { createShortcuts } from './ui/shortcuts';
@@ -52,7 +53,7 @@ new ResizeObserver(() => {
 
 // État réglable depuis le panneau.
 const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
-  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, post: { ...DEFAULT_POST }, lutName: '', dirtName: '', presetId: '' };
+  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, post: { ...DEFAULT_POST }, lutName: '', dirtName: '', presetId: '', sceneTransform: { ...IDENTITY_TRANSFORM } };
 
 // Écran étroit : le panneau de réglages s'ouvre et se ferme avec ce bouton (CSS, index.html).
 const panelToggle = document.getElementById('panel-toggle')!;
@@ -101,7 +102,20 @@ function poseCamera(mode: 'explore' | 'shoot') {
 }
 
 /** Applique mode, capteur, focale et cadre de tournage (letterbox au format du capteur). */
+/** Entité de la scène chargée (modèle), null avant le premier dépôt. */
+let current: pc.Entity | null = null;
+
+/** Place le modèle selon `state.sceneTransform` (position, rotation X Y Z, échelle uniforme). */
+function applySceneTransform() {
+  if (!current) return;
+  const t = state.sceneTransform;
+  current.setLocalPosition(t.x, t.y, t.z);
+  current.setLocalEulerAngles(t.rx, t.ry, t.rz);
+  current.setLocalScale(t.scale, t.scale, t.scale);
+}
+
 function applyCameras() {
+  applySceneTransform();
   const sensor = getSensor(state.sensorId);
   const fov = sensorFov(sensor, state.focal);
   const shooting = state.mode === 'shoot';
@@ -144,6 +158,13 @@ const panel = createPanel(state, applyCameras, {
   lut: (lut) => dof.postProcessor.setLut(lut),
   stock: (s) => dof.postProcessor.setStock(s),
   dirt: (bytes, size) => dof.postProcessor.setDirt(bytes, size),
+  pose: {
+    // Lecture directe (le moteur de timeline n'existe pas encore au premier affichage du panneau).
+    get: () => { const o = orbits.shoot, q = shoot.getPosition(); return { x: q.x, y: q.y, z: q.z, pan: o.yaw, tilt: o.pitch, roll: o.roll }; },
+    set: (v) => timelineEngine.write(v),
+  },
+  aids: (a) => { dof.postProcessor.aids = a; dof.setPost(state.post); },
+  quality: (ratio) => { device.maxPixelRatio = ratio; app.updateCanvasSize(); queueMicrotask(applyCameras); },   // appelé aussi pendant createPanel
 });
 dof.postParams = state.post;
 applyCameras();
@@ -317,8 +338,9 @@ let sceneName = '';
 let awaitingScene: string | null = null;
 
 function applyProject(p: Project) {
-  const { post, aperture, ...scalars } = p.settings;
+  const { post, aperture, sceneTransform, ...scalars } = p.settings;
   const seed = state.post.seed;
+  Object.assign(state.sceneTransform, IDENTITY_TRANSFORM, sceneTransform ?? {});   // en place : le panneau garde la référence
   // `state.post` est partagé avec le rendu (dof.postParams) : mise à jour en place, pas de remplacement.
   Object.assign(state, scalars);
   Object.assign(state.aperture, aperture);
@@ -362,7 +384,7 @@ createShortcuts({
   setMode(mode) { if (state.mode !== mode) { state.mode = mode; panel.sync(); applyCameras(); } },
   fps: () => state.fps,
   fNumber: () => state.fNumber,
-  setFNumber(f) { state.fNumber = f; state.presetId = ''; panel.sync(); applyCameras(); },
+  setFNumber(f) { state.fNumber = f; panel.sync(); applyCameras(); },   // le diaph ne change pas d'objectif
   saveProject: () => { void projectUi.save(); },
   openProject: () => projectUi.open(),
   openExport: () => (document.querySelector('#export .open') as HTMLElement | null)?.click(),
@@ -376,9 +398,14 @@ void startRemoteHost({
   setMode(mode) { if (state.mode !== mode) { state.mode = mode; panel.sync(); applyCameras(); } },
   fps: () => state.fps,
   focal: () => state.focal,
-  setFocal(mm) { state.focal = Math.round(mm * 10) / 10; state.presetId = ''; panel.sync(); applyCameras(); },
+  setFocal(mm) {
+    state.focal = Math.round(mm * 10) / 10;
+    const p = getPreset(state.presetId);
+    if (p && !presetHasFocal(p, state.focal)) state.presetId = '';   // hors de la série / du zoom : réglage manuel
+    panel.sync(); applyCameras();
+  },
   fNumber: () => state.fNumber,
-  setFNumber(f) { state.fNumber = f; state.presetId = ''; panel.sync(); applyCameras(); },
+  setFNumber(f) { state.fNumber = f; panel.sync(); applyCameras(); },   // le diaph ne change pas d'objectif
   focusM: () => state.focusM,
   setFocusM(m) { state.focusM = m; panel.sync(); applyCameras(); },
 }, () => state.mode).then((host) => { if (host) createRemoteUi(document.getElementById('remote')!, host); });
@@ -416,7 +443,13 @@ function focusAt(clientX: number, clientY: number) {
   const dir = shoot.getRotation().transformVector(local);
   const fwd = shoot.forward, pos = shoot.getPosition();
   const tolAngle = (3 * 2) / (r.h * p11); // ≈ 3 px d'angle
-  const z = pickDepth(pickData, [pos.x, pos.y, pos.z], [fwd.x, fwd.y, fwd.z], [dir.x, dir.y, dir.z], tolAngle);
+  // Les centres de splats sont dans le repère du modèle : on y ramène le rayon (rotation, translation,
+  // échelle uniforme s) ; une profondeur locale vaut profondeur monde / s.
+  const inv = current ? current.getWorldTransform().clone().invert() : new pc.Mat4();
+  const s = current ? state.sceneTransform.scale : 1;
+  const oL = inv.transformPoint(pos), dL = inv.transformVector(dir).normalize(), fL = inv.transformVector(fwd).normalize();
+  const zL = pickDepth(pickData, [oL.x, oL.y, oL.z], [fL.x, fL.y, fL.z], [dL.x, dL.y, dL.z], tolAngle);
+  const z = zL === null ? null : zL * s;
   if (z === null) return;
   // Plan de netteté incliné : il doit passer par le point visé (pas seulement couper l'axe à sa profondeur).
   const tau = tiltGradient(lens.tiltDeg, lens.focalMm / 1000 / state.metersPerUnit);
@@ -428,7 +461,6 @@ function focusAt(clientX: number, clientY: number) {
 }
 
 // Chargement par glisser-déposer.
-let current: pc.Entity | null = null;
 let currentAsset: { asset: pc.Asset; url: string } | null = null;
 async function loadFile(file: File) {
   hint.textContent = `Chargement de ${file.name}…`;
@@ -447,6 +479,8 @@ async function loadFile(file: File) {
     awaitingScene = null;
     current.addComponent('gsplat', { asset });
     app.root.addChild(current);
+    if (!keepPose) Object.assign(state.sceneTransform, IDENTITY_TRANSFORM);
+    applySceneTransform();
     // Cadrage robuste : la AABB brute est faussée par les splats aberrants,
     // on utilise les percentiles 2 à 98 % des centres.
     const centers = (asset.resource as pc.GSplatResource | null)?.centers;

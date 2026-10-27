@@ -32,8 +32,14 @@ export interface FfmpegCommand { label: string; file: string; command: string }
  * Les PNG sont encodés sRGB par la chaîne de post : conversion RGB → YUV avec la matrice BT.709, plage « tv »,
  * balises couleur posées pour que les lecteurs interprètent comme l'aperçu.
  */
+/** Cadence au format ffmpeg : les cadences NTSC (23,976 / 29,97 / 59,94) en fraction exacte n·1000/1001. */
+export function ffmpegRate(fps: number): string {
+  for (const n of [24, 30, 48, 60]) if (Math.abs(fps - (n * 1000) / 1001) < 0.002) return `${n * 1000}/1001`;
+  return String(fps);
+}
+
 export function ffmpegCommands({ fps, prefix = 'shot' }: FfmpegOptions): FfmpegCommand[] {
-  const input = `ffmpeg -framerate ${fps} -start_number 1 -i ${prefix}_%05d.png`;
+  const input = `ffmpeg -framerate ${ffmpegRate(fps)} -start_number 1 -i ${prefix}_%05d.png`;
   const tags = '-color_primaries bt709 -color_trc iec61966-2-1 -colorspace bt709';
   const scale = (fmt: string) => `-vf "scale=out_color_matrix=bt709:out_range=tv,format=${fmt}"`;
   return [

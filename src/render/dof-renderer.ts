@@ -190,7 +190,28 @@ export class DofRenderer {
     this.accumShader = mk('SplatCamAccum', ACCUM_WGSL);
     this.post = new PostProcessor(this.device);
     app.on('postrender', () => this.onPostRender());
+    // Le tri des splats est fait dans un worker : son résultat arrive une ou plusieurs images après un changement
+    // de pose. `frame:ready` dit quand l'ordre appliqué correspond à la caméra (voir GSplatComponentSystem).
+    const gs = (app.systems as unknown as { gsplat?: pc.EventHandler }).gsplat;
+    gs?.on('frame:ready', (cam: pc.CameraComponent, _layer: unknown, ready: boolean) => {
+      if (cam === this.camera.camera) this.sortReady = ready;
+    });
   }
+
+  /** Dernier état « tri à jour » signalé par PlayCanvas pour la caméra de tournage. */
+  private sortReady = false;
+
+  /**
+   * Export : rend une image sans l'accumuler, pour laisser le tri des splats rattraper la nouvelle pose.
+   * Renvoie true quand le tri est prêt (deux images de suite), ce qui rend l'export reproductible.
+   */
+  settle(): boolean {
+    this.sortReady = false;
+    this.app.render();
+    if (this.sortReady) this.readyStreak++; else this.readyStreak = 0;
+    return this.readyStreak >= 2;
+  }
+  private readyStreak = 0;
 
   /** Échantillons accumulés depuis le dernier reset. */
   get accumulated(): number { return this.count; }

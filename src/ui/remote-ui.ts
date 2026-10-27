@@ -1,5 +1,6 @@
 // Bouton « Téléphone » : adresse à ouvrir sur le téléphone et nombre d'appareils connectés.
 
+import { renderSVG } from 'uqr';
 import type { RemoteHost } from '../remote/host';
 
 export function createRemoteUi(root: HTMLElement, host: RemoteHost): void {
@@ -18,6 +19,12 @@ export function createRemoteUi(root: HTMLElement, host: RemoteHost): void {
       return;
     }
     line(`Ouvrir sur le téléphone (même Wi-Fi)${info.https ? ', accepter l\'alerte du certificat' : ''} :`);
+    // QR code de la première adresse : il suffit de viser avec l'appareil photo du téléphone (généré localement).
+    if (info.urls[0]) {
+      const qr = Object.assign(document.createElement('div'), { className: 'qr' });
+      qr.innerHTML = renderSVG(info.urls[0], { pixelSize: 4, border: 2, whiteColor: '#ffffff', blackColor: '#000000' });
+      card.append(qr);
+    }
     for (const u of info.urls) {
       const a = Object.assign(document.createElement('textarea'), { readOnly: true, rows: 2, value: u });
       a.addEventListener('focus', () => a.select());

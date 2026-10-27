@@ -61,13 +61,15 @@
     #remote .card { position: absolute; top: calc(100% + 10px); right: 0; width: 320px; padding: 12px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--radius); display: grid; gap: 8px; font-size: 12px; box-shadow: 0 10px 30px #0008; }
     #remote .card.hidden { display: none; }
     #remote .ok { color: var(--ok); } #remote .warn { color: var(--warn); } #remote .small { color: var(--muted); font-size: 11px; }
+    #remote .qr { justify-self: center; background: #fff; padding: 6px; border-radius: 8px; line-height: 0; }
+    #remote .qr svg { width: 180px; height: 180px; }
     #remote textarea { width: 100%; background: var(--bg); color: var(--ok); border: 1px solid var(--line); border-radius: 6px; font: 11px var(--mono); resize: none; padding: 6px; }
     #panel-toggle { display: none; }
 
     /* ---------- Panneau latéral à onglets ---------- */
     #panel { position: fixed; top: var(--top-h); right: 0; bottom: 0; width: var(--side-w); z-index: 5; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); }
-    #panel .tabs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line); }
-    #panel .tabs button { border: 0; background: transparent; color: var(--muted); padding: 7px 2px 9px; cursor: pointer; display: grid; justify-items: center; gap: 3px; font-size: 11px; border-bottom: 2px solid transparent; }
+    #panel .tabs { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line); }
+    #panel .tabs button { border: 0; background: transparent; color: var(--muted); padding: 7px 0 9px; cursor: pointer; display: grid; justify-items: center; gap: 3px; font-size: 10.5px; min-width: 0; border-bottom: 2px solid transparent; }
     #panel .tabs button svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
     #panel .tabs button:hover { color: var(--text); }
     #panel .tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
@@ -116,6 +118,31 @@
     .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .readout { font: 12px/1.6 var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: pre; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px; overflow-x: auto; }
     .readout:empty { display: none; }
+    .seg.wrap { display: flex; flex-wrap: wrap; }
+    .seg.wrap button { flex: 1 0 auto; padding: 5px 8px; font: 12px var(--mono); }
+    .seg.wrap:empty { display: none; }
+    .switch { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; cursor: pointer; }
+    .switch input { appearance: none; -webkit-appearance: none; width: 30px; height: 18px; margin: 0; border-radius: 9px; background: var(--line-2); position: relative; cursor: pointer; transition: background .15s; flex: none; }
+    .switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: transform .15s; }
+    .switch input:checked { background: var(--accent); }
+    .switch input:checked::after { transform: translateX(12px); background: var(--accent-ink); }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .grid3 .cell { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
+    .grid3 .num { padding: 0 6px; font: 12px var(--mono); min-height: 30px; }
+    .swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--surface-2); box-shadow: 0 0 0 1px var(--line-2); cursor: pointer; padding: 0; }
+    .swatch:hover { box-shadow: 0 0 0 1px var(--text); }
+    input.color { width: 34px; height: 26px; padding: 0; border: 1px solid var(--line-2); border-radius: 6px; background: transparent; cursor: pointer; margin-left: auto; }
+    .warn { color: var(--warn); font-size: 11px; }
+    .warn:empty { display: none; }
+    .lensinfo { display: grid; gap: 4px; }
+    .lensinfo .facts { font: 11px var(--mono); color: var(--accent); }
+    .userlist { display: grid; gap: 4px; }
+    .urow { display: flex; gap: 4px; }
+    .urow .btn:first-child { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .btn.x { width: 30px; padding: 0; color: var(--muted); }
+    .sub .num { flex: 1; min-width: 0; }
+    optgroup { color: var(--muted); font-style: normal; }
+    optgroup option { color: var(--text); }
 
     /* ---------- Timeline (dock bas) ---------- */
     #timeline { position: fixed; left: 0; right: var(--side-w); bottom: 0; z-index: 4; padding: 8px 10px 10px; background: var(--surface); border-top: 1px solid var(--line); display: grid; gap: 8px; }

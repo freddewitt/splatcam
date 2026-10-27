@@ -23,6 +23,8 @@ export interface ProjectSettings {
   aperture: Record<string, number>; shiftX: number; shiftY: number; tiltX: number; tiltY: number;
   fps: number; shutterAngle: number; readoutMs: number; weave: number;
   post: Record<string, unknown>; lutName: string; dirtName: string; presetId: string;
+  /** Placement du modèle (absent des projets antérieurs : identité). */
+  sceneTransform?: Record<string, number>;
 }
 
 export interface Project {
@@ -170,6 +172,7 @@ export function parseProject(text: string, defaults: ProjectDefaults): ParsedPro
   a.ringCount = clamp(Math.round(a.ringCount), 1, 100);
   a.roundness = clamp(a.roundness, 0, 1);
   a.catEye = clamp(a.catEye, 0, 1);
+  if (settings.sceneTransform) settings.sceneTransform.scale = settings.sceneTransform.scale > 0 ? clamp(settings.sceneTransform.scale, 1e-3, 1e3) : 1;
 
   const orbits = isObj(raw.orbits) ? raw.orbits : {};
   const scene = isObj(raw.scene) ? raw.scene : {};
