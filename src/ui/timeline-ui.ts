@@ -11,8 +11,6 @@ type View = 'sheet' | 'curves';
 
 const LABELS: Record<TrackId, string> = { x: 'Pos. X', y: 'Pos. Y', z: 'Pos. Z', pan: 'Pan', tilt: 'Tilt', roll: 'Roll', focus: 'Map', zoom: 'Zoom' };
 const LABEL_W = 118, RULER_H = 22, ROW_H = 24, RIGHT_PAD = 14;
-/** Cadence de calage des clés déplacées à la souris (25 i/s, cadence par défaut de l'export). */
-const SNAP = 1 / 25;
 const FOCAL_MARKS = [12, 16, 24, 35, 50, 85, 135, 200, 300];
 /** Étendue verticale minimale (unité de la piste) pour qu'une courbe plate reste lisible. */
 const MIN_SPAN: Record<TrackId, number> = { x: 1, y: 1, z: 1, pan: 20, tilt: 20, roll: 20, focus: 0.5, zoom: 0.3 };
@@ -37,7 +35,10 @@ type Drag =
   | { kind: 'key'; track: TrackId; index: number }
   | { kind: 'handle'; track: TrackId; index: number; side: 'in' | 'out' };
 
-export function createTimelineUI(root: HTMLElement, ctl: TimelineController): { redraw(): void } {
+/** Options : cadence courante (calage des clés sur les images), verrou (export en cours). */
+export interface TimelineUiOptions { fps?(): number; locked?(): boolean }
+
+export function createTimelineUI(root: HTMLElement, ctl: TimelineController, opts: TimelineUiOptions = {}): { redraw(): void } {
   let view: View = 'sheet';
   let collapsed = false;
   let drag: Drag | null = null;
@@ -93,7 +94,8 @@ export function createTimelineUI(root: HTMLElement, ctl: TimelineController): { 
   const tx = (t: number) => LABEL_W + (t / ctl.shot.duration) * (W() - LABEL_W - RIGHT_PAD);
   const xt = (x: number) => ((x - LABEL_W) / (W() - LABEL_W - RIGHT_PAD)) * ctl.shot.duration;
   const clampT = (t: number) => Math.min(Math.max(t, 0), ctl.shot.duration);
-  const snap = (t: number) => clampT(Math.round(t / SNAP) * SNAP);
+  // Clés déplacées à la souris : calées sur les images de la cadence courante.
+  const snap = (t: number) => { const f = opts.fps?.() || 25; return clampT(Math.round(t * f) / f); };
 
   // Étendue verticale de la vue courbes : valeurs de la courbe, clés et poignées, avec marge.
   let vMin = 0, vMax = 1;
@@ -114,11 +116,12 @@ export function createTimelineUI(root: HTMLElement, ctl: TimelineController): { 
   const yv = (y: number) => { const a = area(); return vMin + ((a.y1 - y) / (a.y1 - a.y0)) * (vMax - vMin); };
 
   // --- dessin ---
-  const C = { bg: '#0c0c0e', row: '#16171b', grid: '#2a2c33', text: '#9aa', hi: '#79c', key: '#e8c36a', keySel: '#fff', head: '#ff5a4d', curve: '#6fd0a0', handle: '#8ab' };
+  // Palette alignée sur le thème de l'interface (index.html) : graphite, clés ambre, tête de lecture rouge.
+  const C = { bg: '#0b0b0d', row: '#131316', grid: '#26262d', text: '#8d8c95', hi: '#ecebe7', key: '#e8b04a', keySel: '#fff', head: '#ff5a4d', curve: '#7fd3a2', handle: '#8d8c95' };
 
   function drawRuler(): void {
     g.fillStyle = C.row; g.fillRect(0, 0, W(), RULER_H);
-    g.fillStyle = C.text; g.font = '10px ui-monospace, Menlo, monospace'; g.textBaseline = 'middle';
+    g.fillStyle = C.text; g.font = '10px ui-monospace, "SF Mono", Menlo, monospace'; g.textBaseline = 'middle';
     const D = ctl.shot.duration;
     const step = [0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60].find((s) => (s / D) * (W() - LABEL_W) >= 46) ?? 60;
     for (let t = 0; t <= D + 1e-6; t += step) {
@@ -141,9 +144,9 @@ export function createTimelineUI(root: HTMLElement, ctl: TimelineController): { 
   function drawSheet(): void {
     TRACK_IDS.forEach((id, row) => {
       const y = RULER_H + row * ROW_H;
-      g.fillStyle = id === ctl.curveTrack ? '#1d2230' : row % 2 ? C.bg : C.row;
+      g.fillStyle = id === ctl.curveTrack ? '#22222a' : row % 2 ? C.bg : C.row;
       g.fillRect(0, y, W(), ROW_H);
-      g.fillStyle = C.text; g.font = '11px ui-monospace, Menlo, monospace'; g.textBaseline = 'middle';
+      g.fillStyle = C.text; g.font = '11px ui-monospace, "SF Mono", Menlo, monospace'; g.textBaseline = 'middle';
       g.fillText(LABELS[id], 8, y + ROW_H / 2);
       const v = ctl.valueAt(id, ctl.time);
       if (v !== undefined) { g.fillStyle = C.hi; g.fillText(formatValue(id, v), 74, y + ROW_H / 2); }
@@ -155,7 +158,7 @@ export function createTimelineUI(root: HTMLElement, ctl: TimelineController): { 
   }
 
   function drawYAxis(id: TrackId): void {
-    g.font = '10px ui-monospace, Menlo, monospace'; g.textBaseline = 'middle'; g.textAlign = 'right';
+    g.font = '10px ui-monospace, "SF Mono", Menlo, monospace'; g.textBaseline = 'middle'; g.textAlign = 'right';
     const ticks: [number, string][] = [];
     if (id === 'focus') { // repères de la bague de map, espacés en dioptries
       for (const m of FOCUS_MARKS) { const d = Number.isFinite(m) ? 1 / m : 0; if (d >= vMin && d <= vMax) ticks.push([d, Number.isFinite(m) ? `${m} m` : '∞']); }
@@ -186,7 +189,7 @@ export function createTimelineUI(root: HTMLElement, ctl: TimelineController): { 
   function drawCurves(): void {
     const id = ctl.curveTrack, keys = ctl.shot.tracks[id].keys;
     g.fillStyle = C.bg; g.fillRect(0, RULER_H, W(), H() - RULER_H);
-    g.fillStyle = C.text; g.font = '11px ui-monospace, Menlo, monospace'; g.textBaseline = 'middle';
+    g.fillStyle = C.text; g.font = '11px ui-monospace, "SF Mono", Menlo, monospace'; g.textBaseline = 'middle';
     g.fillText(LABELS[id], 8, RULER_H + 12);
     if (!keys.length) { g.fillText('Aucune clé : double-clic pour en poser une', LABEL_W + 12, RULER_H + 28); return; }
     fitValues(id);
@@ -309,6 +312,9 @@ export function createTimelineUI(root: HTMLElement, ctl: TimelineController): { 
 
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLElement && e.target.matches('input, select, textarea')) return;
+    if (opts.locked?.()) return;
+    // Espace sur un bouton qui a le focus : on garde la lecture, pas l'activation du bouton (double action).
+    if (e.key === ' ' && e.target instanceof HTMLButtonElement) e.target.blur();
     if (e.key === 'Delete' || e.key === 'Backspace') ctl.deleteSelected();
     else if (e.key === ' ') { e.preventDefault(); if (ctl.playing) ctl.pause(); else ctl.play(); }
   });

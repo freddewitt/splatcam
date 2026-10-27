@@ -68,7 +68,8 @@ export const SHORTCUTS: Shortcut[] = [
 export function findShortcut(e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>): Shortcut | undefined {
   const mod = e.ctrlKey || e.metaKey;
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-  if (e.altKey) return undefined;
+  // Option (Alt) sert à taper [ ] sur un clavier AZERTY de Mac : seules les lettres sont écartées avec Alt.
+  if (e.altKey && /^[a-z]$/.test(key)) return undefined;
   return SHORTCUTS.find((s) => s.run && s.key === key && !!s.mod === mod && (s.shift === undefined ? !e.shiftKey || key.length === 1 : s.shift === e.shiftKey));
 }
 

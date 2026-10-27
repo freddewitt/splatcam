@@ -69,14 +69,24 @@ export function folderSink(dir: DirHandle): Sink {
 }
 
 
+/** Taille maximale d'une archive ZIP tenue en mémoire. */
+export const ZIP_MAX_BYTES = 1.5 * 2 ** 30;
+
 /** Archive en mémoire, téléchargée à la fin (repli sans File System Access API). */
 export function zipSink(archiveName = 'shot.zip'): Sink {
   const entries: ZipEntry[] = [];
+  let total = 0;
   return {
     kind: 'zip',
     async existing() { return new Set<number>(); },
     async readMeta() { return null; },
-    async write(name, data) { entries.push({ name, data: typeof data === 'string' ? new TextEncoder().encode(data) : data }); },
+    async write(name, data) {
+      const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+      // L'archive vit en mémoire : on s'arrête tôt plutôt qu'après des heures de rendu (limite ZIP 4 Gio, copie finale ×2).
+      total += bytes.length;
+      if (total > ZIP_MAX_BYTES) throw new Error(`archive trop lourde pour la mémoire (> ${(ZIP_MAX_BYTES / 2 ** 30).toFixed(1)} Gio) : choisir la destination « Dossier »`);
+      entries.push({ name, data: bytes });
+    },
     async finish() {
       const blob = new Blob([buildZip(entries) as BlobPart], { type: 'application/zip' });
       const url = URL.createObjectURL(blob);
@@ -86,7 +96,7 @@ export function zipSink(archiveName = 'shot.zip'): Sink {
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
       return `${entries.length} fichiers dans ${archiveName}.`;
     },
-    abort() { entries.length = 0; return 'Interrompu : l\'archive en mémoire est abandonnée (un dossier permet de reprendre).'; },
+    abort() { entries.length = 0; total = 0; return 'Interrompu : l\'archive en mémoire est abandonnée (un dossier permet de reprendre).'; },
   };
 }
 

@@ -504,7 +504,13 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   let uvs = (p * factor * norm / vec2f(aspect, 1.0)) * 0.5 + 0.5;
   let ca = uniform.uB.x;
   let mid = vec2f(0.5);
-  var col = vec3f(comp(mid + (uvs - mid) * (1.0 + ca)).r, comp(uvs).g, comp(mid + (uvs - mid) * (1.0 - ca)).b);
+  // Sans aberration chromatique, une seule composition au lieu de trois (branche uniforme : même chemin pour tous les pixels).
+  var col: vec3f;
+  if (ca == 0.0) {
+    col = comp(uvs);
+  } else {
+    col = vec3f(comp(mid + (uvs - mid) * (1.0 + ca)).r, comp(uvs).g, comp(mid + (uvs - mid) * (1.0 - ca)).b);
+  }
 
   // Vignettage : naturel cos⁴θ (angle de champ du pixel) × optique (artistique).
   let tv = ndc * uniform.uC.zw;

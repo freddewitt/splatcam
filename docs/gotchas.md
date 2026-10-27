@@ -70,3 +70,10 @@
 - Tests Chrome headless à deux onglets (Mac + téléphone) : l'onglet en arrière-plan n'a plus de `requestAnimationFrame` (la lecture n'avance pas) : `page.bringToFront()` sur le Mac. `page.click` sur un élément `position: fixed` peut bloquer : `page.evaluate(() => el.click())`. Terminer par `process.exit(0)` (les EventSource gardent le processus ouvert). Chrome du test : `--ignore-certificate-errors`.
 - `vite.config.ts` : importer le plugin AVEC l'extension (`./tools/remote-plugin.ts`, sinon avertissement `configLoader: native`) ; il est typé par `tsconfig.node.json` (types `node`), distinct du `tsconfig.json` de `src/`.
 - Panneau sur écran étroit (≤ 760 px) : feuille ouverte par `#panel-toggle` (classe `panel-open` sur `body`), fond OPAQUE (sinon la timeline et les boutons transparaissent).
+
+## Interface (refonte du 2026-10-27)
+- Le canvas est positionné en CSS dans l'espace libre (barre du haut, panneau, timeline) avec `FILLMODE_NONE` : un `<canvas>` est un élément remplacé, `left`/`right` ne l'étirent PAS (il garde 300×150), il faut `width`/`height` explicites (`calc(100vw - var(--side-w))`). Redimensionnement : `ResizeObserver` → `app.updateCanvasSize()` regroupé par `requestAnimationFrame`. La hauteur de la timeline est publiée dans `--tl-h`.
+- Clic de mise au point : coordonnées relatives à `canvas.getBoundingClientRect()` (le canvas ne commence plus en 0,0).
+- Exploration : rendu à la demande (`renderBurst`, 12 images après chaque changement, le tri des splats arrive en différé), sinon GPU au repos. Tout changement passe par `applyCameras()` qui relance la rafale.
+- `DofRenderer.detach()` libère les cibles HDR ; `ensureTargets` rebranche `camera.renderTarget` même à taille identique (sinon, après exploration → tournage, la caméra rendait à l'écran sans HDR).
+- Panneau : les réglages de `state.post` sont modifiés EN PLACE ; valeurs saisies au clavier dans `input.v` ; double-clic sur le libellé = défaut ; la classe `changed` marque l'écart au défaut. Les boutons de mode vivent dans `#modes` (barre du haut), les puces d'objectif dans `#lensbar`.

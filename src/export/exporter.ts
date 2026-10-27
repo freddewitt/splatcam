@@ -76,6 +76,15 @@ export class Exporter {
           return { ok: false, cancelled: false, message: 'Reprise impossible : les réglages (ou la résolution, les échantillons, le plan) ont changé depuis les images déjà écrites. Décocher « Reprendre » pour tout réécrire.' };
         }
         pending = pendingFrames(job.total, done).filter((f) => job.frames.includes(f));
+      } else if (writer.resumable) {
+        // Sans reprise, un dossier qui contient déjà les images d'un AUTRE export finirait mélangé si on annule
+        // (les anciennes images porteraient la nouvelle empreinte) : on refuse.
+        const done = await writer.existing();
+        const meta = done.size > 0 ? await writer.readMeta() : null;
+        const prev = meta ? (JSON.parse(meta) as { key?: string }).key : undefined;
+        if (done.size > 0 && prev !== key) {
+          return { ok: false, cancelled: false, message: `Ce dossier contient déjà ${done.size} image(s) d'un export aux réglages différents : choisir un dossier vide.` };
+        }
       }
       await writer.writeMeta(JSON.stringify({ key, width: job.width, height: job.height, samples: job.samples, fps: job.fps, total: job.total, settings: this.host.settings() }, null, 2));
     } catch (e) {
@@ -99,12 +108,20 @@ export class Exporter {
 
     const frame = r.pending[r.i];
     const dof = this.host.dof;
-    if (!r.started) {
-      this.host.setFrame(frame, frameTime(frame, r.job.fps));
-      dof.reset();
-      r.started = true;
+    let finished: boolean;
+    try {
+      if (!r.started) {
+        this.host.setFrame(frame, frameTime(frame, r.job.fps));
+        dof.reset();
+        r.started = true;
+      }
+      finished = dof.stillStep(STEP_SAMPLES, r.job.samples);
+    } catch (e) {
+      // GPU perdu, mémoire saturée… : on arrête proprement au lieu de relancer l'erreur à chaque image.
+      r.phase = 'write';
+      void r.writer.abort().then(() => this.end({ ok: false, cancelled: false, message: `Erreur de rendu à l'image ${frame + 1} : ${(e as Error).message}` }));
+      return true;
     }
-    const finished = dof.stillStep(STEP_SAMPLES, r.job.samples);
     this.onProgress({ done: r.i, count: r.pending.length, frame, sample: dof.accumulated, samples: r.job.samples });
     if (finished) {
       r.phase = 'write';

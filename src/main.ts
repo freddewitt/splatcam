@@ -1,28 +1,25 @@
 import * as pc from 'playcanvas';
 import { DEFAULT_SENSOR_ID, getSensor, rad2deg, sensorFov } from './optics/sensor';
 import { createPanel, type PanelState } from './ui/panel';
-import { DEFAULT_POST } from './render/post';
+import { DEFAULT_POST, DIRT_SIZE } from './render/post';
 import { DofRenderer } from './render/dof-renderer';
 import { pickDepth, type PickData } from './render/pick';
 import { DEFAULT_APERTURE } from './optics/aperture';
 import { focusThroughPoint, tiltGradient } from './optics/tilt';
 import { TimelineController, type TimelineEngine, type TrackValues } from './timeline/controller';
-import { dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } from './timeline/shot';
+import { CAMERA_TRACKS, dioptersFromMeters, focalFromZoom, metersFromDiopters, sampleShot, zoomFromFocal } from './timeline/shot';
 import { exposurePlan, gateWeave } from './optics/camera-defects';
-import { sampleShot } from './timeline/shot';
 import { createTimelineUI } from './ui/timeline-ui';
 import { Exporter, type ExportHost } from './export/exporter';
 import { folderSink } from './export/sinks';
 import { pngWriter } from './export/writers';
 import { createExportUi } from './ui/export-ui';
-import { CAMERA_TRACKS } from './timeline/shot';
 import { getStock } from './optics/film-stock';
 import { parseProject, projectFileName, serializeProject, type OrbitData, type Project, type ProjectSettings } from './project/project';
 import { createProjectUi } from './ui/project-ui';
 import { createShortcuts } from './ui/shortcuts';
 import { startRemoteHost } from './remote/host';
 import { createRemoteUi } from './ui/remote-ui';
-import { DIRT_SIZE } from './render/post';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -37,9 +34,21 @@ createOptions.resourceHandlers = [pc.GSplatHandler, pc.TextureHandler, pc.Contai
 
 const app = new pc.AppBase(canvas);
 app.init(createOptions);
-app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+// Le canvas occupe l'espace libre entre la barre, le panneau et la timeline (positionné en CSS, index.html) :
+// le cadre de tournage n'est plus masqué par les panneaux. Redimensionnement regroupé à une fois par image.
+app.setCanvasFillMode(pc.FILLMODE_NONE);
 app.setCanvasResolution(pc.RESOLUTION_AUTO);
-window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); });
+let resizeQueued = false;
+new ResizeObserver(() => {
+  if (resizeQueued) return;
+  resizeQueued = true;
+  requestAnimationFrame(() => { resizeQueued = false; app.updateCanvasSize(); applyCameras(); });
+}).observe(canvas);
+// Hauteur de la timeline → variable CSS (la vue 3D s'arrête au-dessus).
+const timelineEl = document.getElementById('timeline')!;
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty('--tl-h', `${timelineEl.offsetHeight}px`);
+}).observe(timelineEl);
 
 // État réglable depuis le panneau.
 const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
@@ -55,6 +64,10 @@ panelToggle.addEventListener('click', () => {
 // Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
 app.autoRender = false;
 let dirty = true;
+/** Exploration : nombre d'images encore à rendre. Le tri des splats arrive une ou deux images après un mouvement,
+ *  on rend donc quelques images de plus puis on s'arrête : GPU au repos quand rien ne bouge (chaleur, batterie). */
+const EXPLORE_SETTLE_FRAMES = 12;
+let renderBurst = EXPLORE_SETTLE_FRAMES;
 
 // Caméra de fond : efface tout l'écran (les bandes noires du cadre de tournage).
 const bg = new pc.Entity('background');
@@ -118,6 +131,7 @@ function applyCameras() {
   }
   dof.targetSamples = state.samples;
   dirty = true;
+  renderBurst = EXPLORE_SETTLE_FRAMES;
 
   poseCamera('explore');
   poseCamera('shoot');
@@ -194,7 +208,7 @@ function updateMotion() {
   };
 }
 updateMotion();
-createTimelineUI(document.getElementById('timeline')!, timeline);
+createTimelineUI(timelineEl, timeline, { fps: () => state.fps, locked: () => exporter.running });
 // Lancer la lecture depuis l'exploration bascule en tournage (seule vue où la timeline pilote la caméra).
 timeline.onChange(() => {
   if (timeline.playing && state.mode === 'explore') { state.mode = 'shoot'; panel.sync(); applyCameras(); }
@@ -235,7 +249,7 @@ const exportHost: ExportHost = {
     const tr = timeline.shot.tracks, o = orbits.shoot;
     const { mode: _mode, focusM, focal, post, ...rest } = state;
     return {
-      ...rest, post: { ...post, seed: 0 },
+      ...rest, post: { ...post, seed: 0 }, scene: sceneName,
       focusM: tr.focus.keys.length ? null : focusM,
       focal: tr.zoom.keys.length ? null : focal,
       pose: CAMERA_TRACKS.some((id) => tr[id].keys.length) ? null : { yaw: o.yaw, pitch: o.pitch, roll: o.roll, dist: o.dist, target: [o.target.x, o.target.y, o.target.z] },
@@ -264,6 +278,8 @@ canvas.addEventListener('pointerup', (e) => {
   if (drag && !drag.pan && drag.moved < 4 && state.mode === 'shoot') focusAt(e.clientX, e.clientY);
   drag = null;
 });
+canvas.addEventListener('pointercancel', () => { drag = null; });
+canvas.addEventListener('lostpointercapture', () => { drag = null; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('pointermove', (e) => {
   if (!drag || exporter.running) return;
@@ -352,13 +368,15 @@ createShortcuts({
   openExport: () => (document.querySelector('#export .open') as HTMLElement | null)?.click(),
 }, document.getElementById('shortcuts')!);
 
+document.getElementById('help-btn')?.addEventListener('click', () => document.getElementById('shortcuts')!.classList.toggle('hidden'));
+
 // Télécommande : le téléphone envoie des commandes (src/remote/), l'application sur le Mac les applique.
 void startRemoteHost({
   timeline,
   setMode(mode) { if (state.mode !== mode) { state.mode = mode; panel.sync(); applyCameras(); } },
   fps: () => state.fps,
   focal: () => state.focal,
-  setFocal(mm) { state.focal = Math.round(mm * 10) / 10; panel.sync(); applyCameras(); },
+  setFocal(mm) { state.focal = Math.round(mm * 10) / 10; state.presetId = ''; panel.sync(); applyCameras(); },
   fNumber: () => state.fNumber,
   setFNumber(f) { state.fNumber = f; state.presetId = ''; panel.sync(); applyCameras(); },
   focusM: () => state.focusM,
@@ -385,10 +403,12 @@ function focusAt(clientX: number, clientY: number) {
   const lens = dof.currentLens;
   if (!lens) return;
   // Pixels CSS → NDC dans le cadre de tournage (cadre centré, lettre-boîte).
-  const k = device.width / canvas.clientWidth;
+  const box = canvas.getBoundingClientRect();
+  const k = device.width / box.width;
   const r = dof.frameRect(lens.aspect);
-  const nx = ((clientX * k - r.x) / r.w) * 2 - 1;
-  const ny = 1 - (((clientY * k - (device.height - r.y - r.h)) / r.h) * 2);
+  const px = (clientX - box.left) * k, py = (clientY - box.top) * k;
+  const nx = ((px - r.x) / r.w) * 2 - 1;
+  const ny = 1 - ((py - (device.height - r.y - r.h)) / r.h) * 2;
   if (Math.abs(nx) > 1 || Math.abs(ny) > 1) return; // clic dans les bandes noires
   const p11 = 1 / Math.tan((lens.fovV * Math.PI) / 360), p00 = p11 / lens.aspect;
   // ndc = p·x/(−z) − P02 (shift compris) ⇒ x/(−z) = (ndc + P02) / p.
@@ -409,14 +429,18 @@ function focusAt(clientX: number, clientY: number) {
 
 // Chargement par glisser-déposer.
 let current: pc.Entity | null = null;
+let currentAsset: { asset: pc.Asset; url: string } | null = null;
 async function loadFile(file: File) {
   hint.textContent = `Chargement de ${file.name}…`;
   const url = URL.createObjectURL(file);
   const asset = new pc.Asset(file.name, 'gsplat', { url, filename: file.name });
   app.assets.add(asset);
-  asset.once('error', (err: string) => { hint.textContent = `Erreur : ${err}`; });
+  asset.once('error', (err: string) => { hint.textContent = `Erreur : ${err}`; app.assets.remove(asset); URL.revokeObjectURL(url); });
   asset.once('load', () => {
     current?.destroy();
+    // La scène précédente libère sa mémoire (splats GPU + données brutes), sinon chaque dépôt s'accumule.
+    if (currentAsset) { currentAsset.asset.unload(); app.assets.remove(currentAsset.asset); URL.revokeObjectURL(currentAsset.url); }
+    currentAsset = { asset, url };
     current = new pc.Entity(file.name);
     sceneName = file.name;
     const keepPose = awaitingScene === file.name;   // projet ouvert avant la scène : on garde sa pose
@@ -451,12 +475,15 @@ async function loadFile(file: File) {
       applyCameras();
     }
     hint.textContent = '';
+    renderBurst = EXPLORE_SETTLE_FRAMES;
   });
   app.assets.load(asset);
 }
-window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
+window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
 window.addEventListener('drop', (e) => {
   e.preventDefault();
+  document.body.classList.remove('dragging');
   const f = e.dataTransfer?.files[0];
   if (!f) return;
   if (f.name.toLowerCase().endsWith('.json')) void projectUi.openFile(f); else void loadFile(f);
@@ -468,20 +495,24 @@ app.on('update', (dt: number) => {
   // Export en cours : il tient le rendu (sous-rendus hors écran), ni lecture ni rendu d'aperçu.
   const exporting = exporter.tick();
   // Lecture / enregistrement de la timeline : seulement en mode tournage (la caméra d'exploration est libre).
-  if (exporting) { /* rien */ }
-  else if (state.mode === 'shoot') {
-    timeline.tick(dt, performance.now());
-    state.post.seed = Math.floor(timeline.time * state.fps + 1e-6); // même image = même bruit
+  // Pendant l'export, le canvas garde la dernière image affichée.
+  if (!exporting) {
+    if (state.mode === 'shoot') {
+      timeline.tick(dt, performance.now());
+      state.post.seed = Math.floor(timeline.time * state.fps + 1e-6); // même image = même bruit
+      dof.frame(dirty);
+      dirty = false;
+    } else {
+      if (timeline.playing) timeline.pause();
+      if (renderBurst > 0) { renderBurst--; app.renderNextFrame = true; }
+    }
   }
-  else if (timeline.playing) timeline.pause();
-  if (exporting) { /* le canvas garde la dernière image affichée */ }
-  else if (state.mode === 'explore') app.renderNextFrame = true;
-  else { dof.frame(dirty); dirty = false; }
   frames++;
   const now = performance.now();
   if (now - last >= 500) {
-    const acc = exporting ? ' · export' : state.mode === 'shoot' ? ` · ${dof.accumulated}/${state.samples} éch.` : '';
-    hud.textContent = `${((frames * 1000) / (now - last)).toFixed(0)} fps · ${device.deviceType}${acc}`;
+    const acc = exporting ? 'export en cours' : state.mode === 'shoot' ? `${dof.accumulated}/${state.samples} éch.` : renderBurst > 0 ? 'rendu' : 'au repos';
+    const idle = !exporting && state.mode === 'explore' && renderBurst === 0;
+    hud.textContent = idle ? 'au repos' : `${((frames * 1000) / (now - last)).toFixed(0)} fps · ${acc}`;
     frames = 0; last = now;
   }
 });

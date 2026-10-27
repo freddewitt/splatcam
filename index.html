@@ -2,104 +2,200 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0b0d" />
   <title>SplatCam</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #111; overflow: hidden; font: 13px ui-monospace, Menlo, monospace; color: #ddd; }
-    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
-    #hud { position: fixed; top: 8px; left: 8px; padding: 4px 8px; background: #0008; border-radius: 4px; pointer-events: none; }
-    #panel { position: fixed; top: 8px; right: 8px; width: 260px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 10px; background: #000b; border-radius: 6px; display: grid; gap: 8px; max-height: calc(100vh - 16px); overflow-y: auto; }
-    #panel .sep { color: #79c; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-top: 4px; border-top: 1px solid #333; padding-top: 8px; }
-    #panel .val { color: #ddd; font-weight: normal; }
-    #panel .row { display: flex; gap: 6px; }
-    #panel button { flex: 1; padding: 8px; min-height: 36px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #panel button.on { background: #357; border-color: #79c; color: #fff; }
-    #panel .field { display: grid; gap: 4px; }
-    #panel .field span { color: #999; font-size: 11px; }
-    #panel select, #panel input[type=number] { width: 100%; box-sizing: border-box; padding: 6px; min-height: 32px; background: #222; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #panel input[type=range] { width: 100%; }
-    #panel .readout { white-space: pre; color: #9c9; font-size: 12px; }
-    #panel.exploring .field, #panel.exploring .readout { opacity: .45; }
-    #timeline { position: fixed; left: 8px; right: 284px; bottom: 8px; box-sizing: border-box; padding: 8px; background: #000b; border-radius: 6px; display: grid; gap: 6px; }
+    /* ---------- Thème : graphite, une seule couleur d'accent (ambre « tally »), valeurs en chiffres tabulaires. ---------- */
+    :root {
+      --bg: #0b0b0d; --surface: #131316; --surface-2: #1a1a1f; --surface-3: #22222a;
+      --line: #26262d; --line-2: #34343d;
+      --text: #ecebe7; --muted: #8d8c95; --faint: #5d5c66;
+      --accent: #e8b04a; --accent-soft: #e8b04a22; --accent-ink: #1a1306;
+      --rec: #ff5a4d; --ok: #7fd3a2; --warn: #f2c27a; --err: #ff8a80;
+      --radius: 10px; --radius-s: 7px;
+      --top-h: 48px; --side-w: 328px; --tl-h: 0px;
+      --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+      --mono: ui-monospace, "SF Mono", Menlo, monospace;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; font: 13px/1.35 var(--ui); color: var(--text); -webkit-font-smoothing: antialiased; }
+    button, select, input, textarea { font: inherit; color: inherit; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    /* ---------- Vue 3D : seulement l'espace libre entre la barre, le panneau et la timeline. ---------- */
+    #app { position: fixed; top: var(--top-h); left: 0; width: calc(100vw - var(--side-w)); height: calc(100dvh - var(--top-h) - var(--tl-h)); display: block; touch-action: none; background: #000; }
+    #hint { position: fixed; top: var(--top-h); left: 0; right: var(--side-w); bottom: var(--tl-h); display: grid; place-items: center; pointer-events: none; color: var(--muted); text-align: center; font-size: 15px; }
+    #hint:empty { display: none; }
+    #hint .drop { padding: 28px 36px; border: 1.5px dashed var(--line-2); border-radius: 16px; display: grid; gap: 6px; }
+    #hint .drop b { color: var(--text); font-weight: 600; font-size: 16px; }
+    #hint .drop small { color: var(--faint); font-size: 12px; }
+    body.dragging #hint .drop { border-color: var(--accent); color: var(--text); }
+
+    /* ---------- Barre du haut ---------- */
+    #topbar { position: fixed; top: 0; left: 0; right: 0; height: var(--top-h); z-index: 8; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 14px; background: var(--surface); border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+    .brand i { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+    .seg { display: inline-flex; padding: 3px; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; gap: 2px; }
+    .seg button { border: 0; background: transparent; color: var(--muted); padding: 5px 12px; min-height: 28px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+    .seg button:hover { color: var(--text); }
+    .seg button.on { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 0 #ffffff10 inset; }
+    #lensbar { display: flex; gap: 6px; min-width: 0; overflow: hidden; }
+    #lensbar span { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; white-space: nowrap; }
+    #lensbar span em { font-style: normal; color: var(--muted); margin-right: 4px; }
+    .spacer { flex: 1; }
+    #hud { font: 11px var(--mono); color: var(--muted); white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+    .tbtn, #project button, #remote > button, #export .open { min-height: 32px; padding: 0 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; color: var(--text); cursor: pointer; white-space: nowrap; }
+    .tbtn:hover, #project button:hover, #remote > button:hover, #export .open:hover { border-color: var(--line-2); background: var(--surface-3); }
+    #export .open { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    #export .open:hover { background: #f0be5e; border-color: #f0be5e; }
+    #project { position: relative; display: flex; }
+    #project .row { display: flex; gap: 6px; }
+    #project .status { position: absolute; top: calc(100% + 10px); right: 0; width: 300px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--radius); color: var(--ok); font-size: 12px; white-space: pre-line; box-shadow: 0 10px 30px #0008; }
+    #project .status:empty { display: none; }
+    #project .status.err { color: var(--err); }
+    #remote { position: relative; }
+    #remote:empty { display: none; }
+    #remote > button.on { border-color: var(--ok); color: var(--ok); }
+    #remote .card { position: absolute; top: calc(100% + 10px); right: 0; width: 320px; padding: 12px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--radius); display: grid; gap: 8px; font-size: 12px; box-shadow: 0 10px 30px #0008; }
+    #remote .card.hidden { display: none; }
+    #remote .ok { color: var(--ok); } #remote .warn { color: var(--warn); } #remote .small { color: var(--muted); font-size: 11px; }
+    #remote textarea { width: 100%; background: var(--bg); color: var(--ok); border: 1px solid var(--line); border-radius: 6px; font: 11px var(--mono); resize: none; padding: 6px; }
+    #panel-toggle { display: none; }
+
+    /* ---------- Panneau latéral à onglets ---------- */
+    #panel { position: fixed; top: var(--top-h); right: 0; bottom: 0; width: var(--side-w); z-index: 5; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); }
+    #panel .tabs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line); }
+    #panel .tabs button { border: 0; background: transparent; color: var(--muted); padding: 7px 2px 9px; cursor: pointer; display: grid; justify-items: center; gap: 3px; font-size: 11px; border-bottom: 2px solid transparent; }
+    #panel .tabs button svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    #panel .tabs button:hover { color: var(--text); }
+    #panel .tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+    #panel .pages { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 10px 10px 24px; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+    #panel .page { display: none; gap: 10px; }
+    #panel .page.on { display: grid; }
+    #panel.exploring .pages { opacity: .5; }
+    #panel .explore-note { display: none; margin: 10px 10px 0; padding: 8px 10px; border-radius: var(--radius-s); background: var(--accent-soft); color: var(--accent); font-size: 12px; }
+    #panel.exploring .explore-note { display: block; }
+
+    .group { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+    .group > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 11px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); user-select: none; }
+    .group > summary::-webkit-details-marker { display: none; }
+    .group > summary::after { content: ""; margin-left: auto; width: 7px; height: 7px; border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint); transform: rotate(45deg) translate(-2px, -2px); transition: transform .15s; }
+    .group:not([open]) > summary::after { transform: rotate(-45deg); }
+    .group > summary .badge { font: 10px var(--mono); letter-spacing: 0; text-transform: none; color: var(--accent); background: var(--accent-soft); padding: 1px 6px; border-radius: 4px; }
+    .group > summary .badge:empty { display: none; }
+    .group .body { display: grid; gap: 12px; padding: 2px 12px 12px; }
+
+    .ctl { display: grid; gap: 6px; }
+    .ctl .head { display: flex; align-items: baseline; gap: 8px; }
+    .ctl .head label, .ctl .head > span:first-child { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; }
+    .ctl .head .v { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+    .ctl .head input.v { width: 78px; text-align: right; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 1px 4px; }
+    .ctl .head input.v:hover { border-color: var(--line-2); }
+    .ctl .head input.v:focus { border-color: var(--accent); background: var(--bg); outline: none; }
+    .ctl.changed .head label::after, .ctl.changed .head > span:first-child::after { content: " •"; color: var(--accent); }
+    .ctl .hint { color: var(--faint); font-size: 11px; }
+    .ctl .sub { color: var(--muted); font-size: 11px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .ctl .sub .name { font: 11px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+    /* Curseurs : piste fine, partie remplie en accent (variable --p posée par le code). */
+    input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 20px; background: transparent; margin: 0; cursor: pointer; touch-action: pan-y; }
+    input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--accent) var(--p, 0%), var(--line-2) var(--p, 0%)); }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--text); border: 0; box-shadow: 0 0 0 3px var(--surface-2), 0 1px 3px #0009; }
+    input[type=range]:active::-webkit-slider-thumb { background: var(--accent); }
+    input[type=range]:disabled { opacity: .4; }
+    .ticks { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--faint); margin-top: -2px; padding: 0 3px; }
+
+    select, .num { width: 100%; min-height: 32px; padding: 0 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-s); color: var(--text); }
+    select { appearance: none; -webkit-appearance: none; padding-right: 28px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 15px) 14px, calc(100% - 10px) 14px; background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer; }
+    select:hover, .num:hover { border-color: var(--line-2); }
+    .btn { min-height: 30px; padding: 0 12px; background: var(--surface-3); border: 1px solid var(--line-2); border-radius: var(--radius-s); color: var(--text); cursor: pointer; }
+    .btn:hover { border-color: var(--muted); }
+    .btn.ghost { background: transparent; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .readout { font: 12px/1.6 var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: pre; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px; overflow-x: auto; }
+    .readout:empty { display: none; }
+
+    /* ---------- Timeline (dock bas) ---------- */
+    #timeline { position: fixed; left: 0; right: var(--side-w); bottom: 0; z-index: 4; padding: 8px 10px 10px; background: var(--surface); border-top: 1px solid var(--line); display: grid; gap: 8px; }
     #timeline.hidden { display: none; }
     #timeline .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-    #timeline button { padding: 4px 10px; min-height: 30px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #timeline button.on { background: #357; border-color: #79c; color: #fff; }
-    #timeline button.rec { background: #8b1a1a; border-color: #f66; color: #fff; }
-    #timeline input[type=number] { width: 60px; padding: 4px; background: #222; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #timeline .time { color: #9c9; min-width: 60px; }
-    #timeline canvas { width: 100%; height: 230px; touch-action: none; border-radius: 4px; }
-    #timeline.collapsed canvas { display: none; }
-    @media (max-width: 760px) { #timeline { right: 8px; bottom: 8px; } }
-    #export .open { position: fixed; top: 40px; left: 8px; padding: 4px 10px; min-height: 30px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #export .box { position: fixed; inset: 0; background: #000a; display: grid; place-items: center; z-index: 10; }
-    #export .box.hidden { display: none; }
-    #export .card { max-height: calc(100vh - 32px); overflow-y: auto; width: 340px; max-width: calc(100vw - 32px); box-sizing: border-box; padding: 14px; background: #181818; border: 1px solid #444; border-radius: 8px; display: grid; gap: 8px; }
-    #export h3 { margin: 0; font-size: 14px; }
-    #export .field { display: grid; gap: 4px; }
-    #export .field span, #export .status { color: #999; font-size: 11px; }
-    #export .status.err { color: #f88; }
-    #export .check { color: #999; font-size: 11px; }
-    #export .readout { white-space: pre; color: #9c9; font-size: 12px; }
-    #export select, #export input[type=number] { width: 100%; box-sizing: border-box; padding: 6px; min-height: 32px; background: #222; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #export progress { width: 100%; }
-    #export .row { display: flex; gap: 6px; }
-    #export .row button { flex: 1; padding: 8px; min-height: 36px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #export .row button.go { background: #357; border-color: #79c; color: #fff; }
-    #export .cmds { display: grid; gap: 6px; }
-    #export .cmd { display: grid; gap: 4px; }
-    #export .cmd span { color: #999; font-size: 11px; }
-    #export textarea { width: 100%; box-sizing: border-box; background: #111; color: #9c9; border: 1px solid #555; border-radius: 4px; font: 11px ui-monospace, Menlo, monospace; resize: vertical; }
-    #export .cmd button { padding: 4px; min-height: 28px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #export button:disabled { opacity: .4; }
-    #project { position: fixed; top: 76px; left: 8px; width: 200px; display: grid; gap: 4px; }
-    #project .row { display: flex; gap: 4px; }
-    #project button { flex: 1; padding: 4px 8px; min-height: 30px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #project .status { color: #9c9; font-size: 11px; white-space: pre-line; background: #000b; border-radius: 4px; }
-    #project .status:empty { display: none; }
-    #project .status.err { color: #f88; }
-    #remote { position: fixed; top: 76px; left: 212px; width: 280px; display: grid; gap: 4px; align-content: start; }
-    #remote > button { padding: 4px 8px; min-height: 30px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #remote > button.on { background: #357; border-color: #79c; color: #fff; }
-    #remote .card { padding: 8px; background: #000d; border-radius: 6px; display: grid; gap: 6px; font-size: 12px; }
-    #remote .card.hidden { display: none; }
-    #remote .ok { color: #9c9; }
-    #remote .warn { color: #fc8; }
-    #remote .small { color: #999; font-size: 11px; }
-    #remote textarea { width: 100%; box-sizing: border-box; background: #111; color: #9c9; border: 1px solid #555; border-radius: 4px; font: 11px ui-monospace, Menlo, monospace; resize: none; }
-    #shortcuts { position: fixed; inset: 0; background: #000a; display: grid; place-items: center; z-index: 11; }
-    #shortcuts.hidden { display: none; }
-    #shortcuts .card { max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box; padding: 14px; background: #181818; border: 1px solid #444; border-radius: 8px; display: grid; gap: 8px; }
-    #shortcuts h3 { margin: 0; font-size: 14px; }
-    #shortcuts td { padding: 2px 10px 2px 0; }
-    #shortcuts kbd { background: #333; border: 1px solid #555; border-radius: 3px; padding: 1px 6px; color: #fff; }
-    #shortcuts button { padding: 8px; min-height: 36px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    #panel-toggle { display: none; position: fixed; top: 8px; right: 8px; z-index: 6; padding: 6px 12px; min-height: 36px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
-    /* Écran étroit (téléphone, petite tablette) : le panneau devient une feuille plein écran qu'on ouvre à la demande. */
+    #timeline button { min-height: 28px; padding: 0 10px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+    #timeline button:hover { border-color: var(--line-2); background: var(--surface-3); }
+    #timeline button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+    #timeline button.rec { background: var(--rec); border-color: var(--rec); color: #fff; }
+    #timeline input[type=number] { width: 64px; min-height: 28px; padding: 0 6px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 7px; font: 12px var(--mono); }
+    #timeline .row > span:not(.time) { color: var(--muted); font-size: 12px; }
+    #timeline .time { font: 13px var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); min-width: 70px; text-align: center; }
+    #timeline canvas { width: 100%; height: 220px; touch-action: none; border-radius: 8px; display: block; }
+    #timeline.collapsed canvas, #timeline.collapsed .modebar { display: none; }
+
+    /* ---------- Fenêtres (export, aide) ---------- */
+    #export .box, #shortcuts { position: fixed; inset: 0; background: #000a; display: grid; place-items: center; z-index: 20; }
+    #export .box.hidden, #shortcuts.hidden { display: none; }
+    #export .card, #shortcuts .card { max-height: calc(100dvh - 32px); overflow-y: auto; width: 400px; max-width: calc(100vw - 24px); padding: 18px; background: var(--surface); border: 1px solid var(--line-2); border-radius: 14px; display: grid; gap: 12px; box-shadow: 0 30px 80px #000c; }
+    #shortcuts .card { width: 460px; }
+    #export h3, #shortcuts h3 { margin: 0; font-size: 15px; font-weight: 650; }
+    #export .field { display: grid; gap: 5px; }
+    #export .field > span, #export .status { color: var(--muted); font-size: 12px; }
+    #export .status.err { color: var(--err); }
+    #export .check { color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center; }
+    #export .readout { white-space: pre; }
+    #export select, #export input[type=number] { width: 100%; min-height: 34px; padding: 0 10px; background-color: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-s); }
+    #export progress { width: 100%; height: 6px; appearance: none; -webkit-appearance: none; border: 0; border-radius: 3px; overflow: hidden; background: var(--line-2); }
+    #export progress::-webkit-progress-bar { background: var(--line-2); }
+    #export progress::-webkit-progress-value { background: var(--accent); }
+    #export .row { display: flex; gap: 8px; }
+    #export .row button, #export .cmd button, #shortcuts button { flex: 1; min-height: 36px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--radius-s); cursor: pointer; }
+    #export .row button.go { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    #export button:disabled { opacity: .4; cursor: default; }
+    #export .cmds { display: grid; gap: 8px; }
+    #export .cmd { display: grid; gap: 5px; }
+    #export .cmd span { color: var(--muted); font-size: 12px; }
+    #export textarea { width: 100%; background: var(--bg); color: var(--ok); border: 1px solid var(--line); border-radius: 6px; font: 11px var(--mono); resize: vertical; padding: 6px; }
+    #shortcuts table { border-collapse: collapse; width: 100%; }
+    #shortcuts td { padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); color: var(--muted); }
+    #shortcuts td:first-child { width: 1%; white-space: nowrap; }
+    #shortcuts kbd { font: 11px var(--mono); background: var(--surface-3); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 5px; padding: 2px 7px; color: var(--text); }
+
+    /* ---------- Écran moyen : panneau plus étroit, chips réduites ---------- */
+    @media (max-width: 1180px) { :root { --side-w: 296px; } #lensbar span:nth-child(n+4) { display: none; } }
+    @media (max-width: 980px) { #lensbar, #hud { display: none; } .brand span { display: none; } }
+
+    /* ---------- Écran étroit (téléphone) : le panneau devient une feuille ouverte à la demande ---------- */
     @media (max-width: 760px) {
-      #panel-toggle { display: block; }
-      #panel { display: none; z-index: 5; background: #141414; top: 52px; right: 8px; left: 8px; width: auto; max-height: calc(100dvh - 60px); }
-      body.panel-open #panel { display: grid; }
-      #hud { max-width: calc(100vw - 120px); overflow: hidden; white-space: nowrap; }
-      #remote { left: 8px; right: 8px; width: auto; top: 112px; z-index: 4; }
-      #project { z-index: 4; }
-      #timeline canvas { height: 150px; }
-      #hint { font-size: 13px; padding: 0 24px; }
+      :root { --side-w: 0px; --top-h: 52px; }
+      #topbar { gap: 6px; padding: 0 8px; overflow-x: auto; }
+      #project button, #remote > button, #export .open, .tbtn { padding: 0 9px; }
+      #help-btn { display: none; }
+      #panel-toggle { display: block; order: -1; }
+      .brand { order: -2; }
+      #panel { display: none; left: 0; width: auto; border-left: 0; background: var(--surface); }
+      body.panel-open #panel { display: flex; }
+      #timeline canvas { height: 140px; }
+      #project .status, #remote .card { position: fixed; top: calc(var(--top-h) + 8px); left: 8px; right: 8px; width: auto; }
     }
-    #hint { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 16px; color: #888; text-align: center; }
   </style>
 </head>
 <body>
+  <header id="topbar">
+    <div class="brand"><i></i><span>SplatCam</span></div>
+    <div id="modes" class="seg" role="group" aria-label="Vue"></div>
+    <div id="lensbar" aria-live="polite"></div>
+    <div class="spacer"></div>
+    <div id="hud">…</div>
+    <div id="project"></div>
+    <div id="remote"></div>
+    <div id="export"></div>
+    <button id="help-btn" class="tbtn" type="button" title="Raccourcis clavier (?)">?</button>
+    <button id="panel-toggle" class="tbtn" type="button">Réglages</button>
+  </header>
   <canvas id="app"></canvas>
-  <div id="hud">…</div>
-  <button id="panel-toggle" type="button">Réglages</button>
-  <div id="panel"></div>
+  <div id="hint"><div class="drop"><b>Dépose une scène ici</b><span>.ply · .sog · .splat · .spz, ou un projet .json</span><small>Rien ne quitte ta machine.</small></div></div>
+  <aside id="panel" aria-label="Réglages"></aside>
   <div id="timeline"></div>
-  <div id="export"></div>
-  <div id="project"></div>
-  <div id="remote"></div>
   <div id="shortcuts" class="hidden"></div>
-  <div id="hint">Glisse un fichier .ply / .sog / .splat / .spz ici</div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

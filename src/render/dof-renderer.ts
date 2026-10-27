@@ -127,6 +127,8 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
     let uvo = vec2f((pr.x * vo.x - sh.x) * 0.5 + 0.5, 0.5 - (pr.y * vo.y - sh.y) * 0.5);
     rgb = textureSampleLevel(sceneTex, sceneTexSampler, uvo, 0.0).rgb;
   }
+  // Un NaN / Inf (splat dégénéré) empoisonnerait le pixel pour toute l'accumulation : on l'écarte.
+  rgb = min(select(rgb, vec3f(0.0), rgb != rgb), vec3f(6.0e4));
   let scene = select(vec4f(0.0), vec4f(rgb, 1.0), w > 0.5);
   output.color = prev + scene;
   return output;
@@ -231,10 +233,13 @@ export class DofRenderer {
 
   /** (Re)crée les cibles à la taille du cadre affiché (pixels). */
   private ensureTargets(w: number, h: number): void {
-    if (w === this.w && h === this.h && this.sceneRT) return;
-    this.sceneRT?.destroy();
+    if (w === this.w && h === this.h && this.sceneRT) {
+      // Après detach() (passage en exploration), la caméra a perdu sa cible HDR : on la rebranche.
+      if (this.camera.camera!.renderTarget !== this.sceneRT) this.camera.camera!.renderTarget = this.sceneRT;
+      return;
+    }
+    this.releaseTargets();
     this.sceneRT?.colorBuffer?.destroy();
-    for (const a of this.accum) { a.rt.destroy(); a.tex.destroy(); }
     const scene = this.makeTarget(w, h, pc.PIXELFORMAT_RGBA16F, 'splatcam-scene', pc.FILTER_LINEAR);
     this.sceneRT = scene.rt;
     this.accum = [0, 1].map((i) => this.makeTarget(w, h, pc.PIXELFORMAT_RGBA32F, `splatcam-accum-${i}`));
@@ -250,10 +255,19 @@ export class DofRenderer {
     return { x: Math.round((cw - w) / 2), y: Math.round((ch - h) / 2), w, h };
   }
 
-  /** Débranche la caméra de la cible HDR (retour en mode exploration). */
+  /** Détruit les cibles HDR (scène + 2 accumulateurs) : libère la mémoire unifiée du Mac. */
+  private releaseTargets(): void {
+    if (this.sceneRT) { const tex = this.sceneRT.colorBuffer; this.sceneRT.destroy(); tex?.destroy(); this.sceneRT = null; }
+    for (const a of this.accum) { a.rt.destroy(); a.tex.destroy(); }
+    this.accum = [];
+    this.w = 0; this.h = 0; this.count = 0; this.cur = 0;
+  }
+
+  /** Débranche la caméra de la cible HDR (retour en mode exploration) et libère les cibles. */
   detach(): void {
     const cc = this.camera.camera as unknown as { renderTarget: pc.RenderTarget | null };
     cc.renderTarget = null;
+    if (!this.fixed) this.releaseTargets();
     this.camera.camera!.projectionOffset = new pc.Vec2(0, 0);
   }
 
@@ -387,7 +401,7 @@ export class DofRenderer {
   /** Libère l'export ; les cibles reprennent la taille du cadre affiché à la prochaine image. */
   endStill(): void {
     if (this.still) { this.still.rt.destroy(); this.still.tex.destroy(); this.still = null; }
-    if (this.fixed) { this.fixed = null; this.w = 0; this.h = 0; this.count = 0; }
+    if (this.fixed) { this.fixed = null; this.releaseTargets(); }
   }
 
   /** Dans le rendu de l'image : accumule le sous-rendu, puis affiche si c'est le dernier. */

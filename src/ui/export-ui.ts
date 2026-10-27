@@ -24,8 +24,8 @@ const el = <T extends HTMLElement>(tag: string, attrs: Record<string, string> = 
 const HEIGHTS = [720, 1080, 1440, 2160, 2880];
 
 export function createExportUi(root: HTMLElement, ctx: ExportUiContext): { setProgress(p: ExportProgress): void } {
-  const open = el<HTMLButtonElement>('button', { class: 'open' }, 'Export…');
-  const card = el('div', { class: 'card' });
+  const open = el<HTMLButtonElement>('button', { class: 'open', type: 'button', title: 'Exporter le plan (X)' }, 'Exporter');
+  const card = el('div', { class: 'card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Export' });
   const box = el('div', { class: 'box hidden' });
   box.append(card);
   root.append(open, box);
@@ -125,7 +125,11 @@ export function createExportUi(root: HTMLElement, ctx: ExportUiContext): { setPr
     samples.value = String(ctx.info().samples); bar.value = 0; status.textContent = ''; commands.replaceChildren();
     busy(false); refreshBitrate(); box.classList.remove('hidden');
   });
-  close.addEventListener('click', () => box.classList.add('hidden'));
+  const hide = () => { if (!ctx.exporter().running) { box.classList.add('hidden'); open.focus(); } };
+  close.addEventListener('click', hide);
+  // Fond cliqué ou Échap : ferme (sauf pendant un export, qui se suit dans cette fenêtre).
+  box.addEventListener('click', (e) => { if (e.target === box) hide(); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !box.classList.contains('hidden')) hide(); });
   cancel.addEventListener('click', () => ctx.exporter().cancel());
 
   /** Commandes ffmpeg de finition, prêtes à copier. */

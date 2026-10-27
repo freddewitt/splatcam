@@ -51,7 +51,8 @@ function slider(min: number, max: number, step: number, onInput: (v: number) => 
   let down = false;
   const send = throttled(onInput);
   input.addEventListener('pointerdown', () => { down = true; });
-  addEventListener('pointerup', () => { down = false; });
+  // pointercancel : le geste a été repris par le défilement (tactile) ; sans lui, le curseur ne suivrait plus le Mac.
+  for (const t of ['pointerup', 'pointercancel']) addEventListener(t, () => { down = false; });
   input.addEventListener('input', () => send(parseFloat(input.value)));
   return { input, set: (v: number) => { if (!down) input.value = String(v); } };
 }

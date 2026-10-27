@@ -156,9 +156,20 @@ export function parseProject(text: string, defaults: ProjectDefaults): ParsedPro
   settings.fNumber = Math.max(settings.fNumber, 0.5);
   settings.metersPerUnit = settings.metersPerUnit > 0 ? settings.metersPerUnit : defaults.settings.metersPerUnit;
   settings.focusM = Math.max(settings.focusM, 0.01);
-  settings.samples = Math.max(1, Math.round(settings.samples));
-  settings.fps = settings.fps > 0 ? settings.fps : defaults.settings.fps;
-  settings.shutterAngle = Math.min(Math.max(settings.shutterAngle, 0), 360);
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+  settings.samples = clamp(Math.round(settings.samples), 1, 1024);
+  settings.fps = settings.fps > 0 ? clamp(settings.fps, 1, 120) : defaults.settings.fps;
+  settings.shutterAngle = clamp(settings.shutterAngle, 0, 360);
+  settings.readoutMs = clamp(settings.readoutMs, 0, 200);
+  settings.tiltX = clamp(settings.tiltX, -30, 30);
+  settings.tiltY = clamp(settings.tiltY, -30, 30);
+  // Forme d'ouverture : squeeze ≥ 1 (sinon décalage infini), lames et anneaux en nombres raisonnables.
+  const a = settings.aperture;
+  a.squeeze = clamp(a.squeeze, 1, 3);
+  a.blades = clamp(Math.round(a.blades), 0, 32);
+  a.ringCount = clamp(Math.round(a.ringCount), 1, 100);
+  a.roundness = clamp(a.roundness, 0, 1);
+  a.catEye = clamp(a.catEye, 0, 1);
 
   const orbits = isObj(raw.orbits) ? raw.orbits : {};
   const scene = isObj(raw.scene) ? raw.scene : {};
