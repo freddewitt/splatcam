@@ -1,81 +1,81 @@
 # Changelog
 
-Toutes les évolutions notables de SplatCam. Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), versions selon [SemVer](https://semver.org/lang/fr/).
+All notable changes to SplatCam. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
 
-## [Non publié]
+## [Unreleased]
 
-### Prévu
-- Lumières ajoutées dans la scène (ponctuelle / spot, puis orientation des surfaces, puis ombres).
-- Préréglages ease in / ease out / ease in-out sur les clés de la timeline.
-- Plusieurs scènes dans un même plan.
+### Planned
+- Lights added to the scene (point / spot, then surface orientation, then shadows).
+- Ease in / ease out / ease in-out presets on timeline keys.
+- Several scenes in one shot.
 
 ## [0.1.0] - 2026-10-27
 
-Première version : tous les jalons M0 à M8 sont livrés. M7, M7bis et M8 restent à valider à l'œil (sélecteur de dossier réel, vrai téléphone).
+First version: milestones M0 to M8 are delivered. M7, M7bis and M8 still need to be checked by eye (real folder picker, real phone).
 
-### Ajouté
+### Added
 
-**Base (M0)**
-- Projet Vite + TypeScript, PlayCanvas 2.23 en WebGPU.
-- Chargement d'une scène par glisser-déposer, caméra orbite, HUD des FPS.
+**Foundation (M0)**
+- Vite + TypeScript project, PlayCanvas 2.23 on WebGPU.
+- Scene loading by drag and drop, orbit camera, FPS HUD.
 
-**Caméra réelle (M1)**
-- 9 formats de capteur, du Super 8 au moyen format ; focale, FOV horizontal / vertical / diagonal.
-- Échelle de scène en mètres.
-- Caméra d'exploration et caméra de tournage séparées, cadre au rapport du capteur.
+**Real camera (M1)**
+- 9 sensor formats, from Super 8 to medium format; focal length, horizontal / vertical / diagonal FOV.
+- Scene scale in meters.
+- Separate exploration and shooting cameras, frame matched to the sensor's aspect ratio.
 
-**Profondeur de champ (M2)**
-- Accumulation HDR multi-échantillons : sous-rendus linéaires moyennés, échantillons Halton sur la pupille.
-- Projection cisaillée pour garder le plan de netteté fixe ; CoC exacte de la lentille mince.
-- Ouverture de f/1.2 à f/22, mise au point en mètres ou par clic sur la scène.
-- Aperçu progressif, de 1 à 1024 échantillons.
+**Depth of field (M2)**
+- Multi-sample HDR accumulation: averaged linear sub-renders, Halton samples on the pupil.
+- Sheared projection that keeps the focal plane fixed; exact thin-lens CoC.
+- Aperture from f/1.2 to f/22, focus in meters or by clicking on the scene.
+- Progressive preview, from 1 to 1024 samples.
 
-**Bokeh et tilt / shift (M3)**
-- Formes d'ouverture (disque, N lames, arrondi, rotation), onion rings, aberration sphérique, cat-eye, swirl, squeeze anamorphique.
-- Shift par frustum asymétrique, tilt / swing selon Scheimpflug.
-- Presets d'objectif en JSON.
+**Bokeh and tilt / shift (M3)**
+- Aperture shapes (disc, N blades, rounding, rotation), onion rings, spherical aberration, cat-eye, swirl, anamorphic squeeze.
+- Shift through an asymmetric frustum, Scheimpflug tilt / swing.
+- JSON lens presets.
 
-**Timeline de plan (M4)**
-- Pistes X / Y / Z, pan / tilt / roll, mise au point (dioptries), zoom (log).
-- Éditeur de courbes Bézier (clés Bézier, linéaires, en palier ; poignées auto sans dépassement).
-- Feuille de clés, transport (lecture, scrub, boucle), mode enregistrement.
+**Shot timeline (M4)**
+- X / Y / Z, pan / tilt / roll, focus (diopters) and zoom (log) tracks.
+- Bézier curve editor (Bézier, linear and hold keys; overshoot-free auto handles).
+- Dope sheet, transport (play, scrub, loop), record mode.
 
-**Obturateur et défauts (M5)**
-- Flou de mouvement par angle d'obturation : chaque échantillon lit la timeline à son instant.
+**Shutter and defects (M5)**
+- Motion blur from the shutter angle: each sample reads the timeline at its own instant.
 - Rolling shutter, gate weave.
 
-**Optique et pellicule (M6)**
-- Tone mapping (ACES, Reinhard, aucun), exposition en EV, gain des hautes lumières.
-- Bloom, halation, vignettage, distorsion, aberration chromatique.
-- Bruit ISO, grain de pellicule.
-- 9 émulsions originales, looks LUT `.cube`.
-- Flares : étoiles de diffraction, streaks anamorphiques, ghosts, lens dirt.
+**Optics and film (M6)**
+- Tone mapping (ACES, Reinhard, none), exposure in EV, highlight gain.
+- Bloom, halation, vignetting, distortion, chromatic aberration.
+- ISO noise, film grain.
+- 9 original film stocks, `.cube` LUT looks.
+- Flares: diffraction starbursts, anamorphic streaks, ghosts, lens dirt.
 
 **Export (M7, M7bis)**
-- Séquence PNG 16 bits déterministe (`shot_00001.png`), vers un dossier ou en ZIP, avec reprise, annulation et réglages écrits dans `shot_export.json`.
-- Aperçu MP4 H.264 / H.265 (WebCodecs + Mediabunny), codecs interrogés à l'exécution.
-- Commandes `ffmpeg` de finition (ProRes 4444, H.265 10 bits) affichées en fin de séquence.
+- Deterministic 16-bit PNG sequence (`shot_00001.png`), to a folder or as a ZIP, with resume, cancel and settings written to `shot_export.json`.
+- H.264 / H.265 MP4 preview (WebCodecs + Mediabunny), codecs queried at runtime.
+- Finishing `ffmpeg` commands (ProRes 4444, 10-bit H.265) shown at the end of a sequence.
 
-**Confort (M8)**
-- Projet JSON (enregistrer / ouvrir, validation des champs).
-- Raccourcis clavier avec aide intégrée.
-- Télécommande sur téléphone (relais local dans le serveur Vite, jeton, HTTPS auto-signé) et interface mobile.
+**Comfort (M8)**
+- JSON project (save / open, field validation).
+- Keyboard shortcuts with built-in help.
+- Phone remote (local relay in the Vite server, token, self-signed HTTPS) and mobile layout.
 
-**Après M8**
-- Interface refaite : barre du haut, onglets Caméra, Objectif, Cadence, Image, Optique, Moniteur, Scène.
-- 34 objectifs, dont 24 séries réelles, avec défauts optiques, série de focales, ouverture max. et MAP minimale.
-- Affichage de la profondeur de champ et de l'hyperfocale ; position de la caméra au chiffre.
-- Placement de la scène (position, rotation, échelle autour du centre du modèle, raccourcis ⌥ + flèches).
-- Résolution d'aperçu 50 % / 100 % / Retina.
-- Aides à l'écran : zébras, focus peaking (Sobel sur la luminance log, couleur, option noir et blanc, touche `P`), tiers, zones de sécurité, masques de format.
-- Étalonnage : température et teinte, contraste, saturation, lift / gamma / gain avec couleur.
-- « Mes réglages », cadences de 23,976 à 60 i/s, couleurs libres pour la halation et les streaks.
-- QR code pour ouvrir la télécommande.
+**After M8**
+- Redesigned interface: top bar, Camera, Lens, Frame rate, Image, Optics, Monitor and Scene tabs.
+- 34 lenses, including 24 real-world series, with optical flaws, focal length range, maximum aperture and minimum focus distance.
+- Depth of field and hyperfocal display; numeric camera position.
+- Scene placement (position, rotation and scale around the model's center, ⌥ + arrow shortcuts).
+- Preview resolution 50% / 100% / Retina.
+- On-screen aids: zebras, focus peaking (Sobel on log luminance, color, black-and-white option, `P` key), thirds, safe areas, format masks.
+- Color grading: temperature and tint, contrast, saturation, lift / gamma / gain with color.
+- "My settings", frame rates from 23.976 to 60 fps, custom colors for halation and streaks.
+- QR code to open the phone remote.
 
-### Corrigé
-- Audit du rendu, de l'export et de la timeline : perte de la cible HDR après l'exploration, fuite mémoire au changement de scène, export bloqué sur erreur, ZIP sans limite, calage des clés à 25 i/s, clavier AZERTY, bornes du projet.
-- Export en vrai 16 bits : sous-rendu et source du post-traitement en RGBA32F pendant l'export.
-- Rendu à la demande en exploration pour économiser le GPU d'Apple Silicon.
+### Fixed
+- Audit of rendering, export and timeline: HDR target lost after exploring, memory leak on scene change, export stuck on error, unbounded ZIP, key snapping at 25 fps, AZERTY keyboards, project bounds.
+- True 16-bit export: sub-render and post-processing source in RGBA32F during export.
+- On-demand rendering while exploring, to spare the Apple Silicon GPU.
 
-[Non publié]: #
-[0.1.0]: #
+[Unreleased]: https://github.com/freddewitt/splatcam/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/freddewitt/splatcam/releases/tag/v0.1.0

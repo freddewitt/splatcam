@@ -1,139 +1,140 @@
 # SplatCam
 
-**Une caméra de cinéma pour les scènes en Gaussian Splats.**
+**A cinema camera for Gaussian Splat scenes.**
 
-SplatCam traite une scène capturée en Gaussian Splats comme un plateau de tournage. On y pose une vraie caméra avec un vrai objectif, on planifie ses mouvements sur une timeline, puis on exporte un rendu de qualité cinéma en séquence d'images 16 bits ou en aperçu MP4.
+SplatCam treats a Gaussian Splat capture like a film set. You place a real camera with a real lens, plan its moves on a timeline, then export a cinema-grade render as a 16-bit image sequence or an MP4 preview.
 
-Le rendu se veut physiquement crédible : un objectif à f/1.4 mis au point à 2 m se comporte comme un f/1.4 à 2 m. Tout est exprimé en mètres grâce à une échelle de scène réglable.
+The rendering aims to be physically believable: a lens at f/1.4 focused at 2 m behaves like f/1.4 at 2 m. Everything is expressed in meters through an adjustable scene scale.
 
-L'application tourne en local dans Chrome sur un Mac Apple Silicon. Elle n'a ni serveur distant, ni compte, ni télémétrie : rien ne quitte la machine.
+The app runs locally in Chrome on an Apple Silicon Mac. No remote server, no account, no telemetry: nothing leaves your machine.
 
-![Interface de SplatCam](docs/captures/refonte-ui.png)
+![SplatCam interface](docs/captures/refonte-ui.png)
 
-> **Statut : v0.1, usage personnel.** Les fonctions principales sont en place et testées. Plusieurs restent à valider à l'œil sur de vraies scènes (voir [CHANGELOG](CHANGELOG.md) et [docs/avancement.md](docs/avancement.md)).
+> **Status: v0.1, personal use.** The main features are in place and tested. Several still need to be checked by eye on real scenes (see the [CHANGELOG](CHANGELOG.md)). The development log in `docs/` is written in French.
 
 ---
 
-## Pourquoi c'est différent
+## Why it's different
 
-Les splats n'écrivent pas dans le depth buffer. Une profondeur de champ en post-traitement, calculée d'après la profondeur, est donc impossible. SplatCam fait comme une vraie caméra : il **accumule des centaines de sous-rendus** en HDR linéaire.
+Splats don't write to the depth buffer, so a depth-based post-process depth of field is impossible. SplatCam works like a real camera instead: it **accumulates hundreds of sub-renders** in linear HDR.
 
-- Chaque sous-rendu déplace la caméra sur un point de la pupille de l'objectif et le place à un instant de la fenêtre d'obturation. Le tirage est stratifié (Halton) sur l'ouverture et sur le temps.
-- La projection est cisaillée pour que le plan de netteté tombe toujours au même pixel. Ce qui est au point reste net, et le reste se brouille exactement selon le cercle de confusion.
-- Le caractère du bokeh vient uniquement de la distribution des échantillons d'ouverture : forme des lames, anneaux, cat-eye, swirl, aberration sphérique, squeeze anamorphique.
-- Le flou de mouvement vient du même mécanisme : chaque échantillon lit la caméra, la mise au point et le zoom à son propre instant.
+- Each sub-render moves the camera to a point on the lens pupil and places it at an instant within the shutter window. Sampling is stratified (Halton) jointly over aperture and time.
+- The projection is sheared so the focal plane always lands on the same pixel. What is in focus stays sharp, and everything else blurs exactly according to the circle of confusion.
+- The bokeh's character comes entirely from the distribution of aperture samples: blade shape, onion rings, cat-eye, swirl, spherical aberration, anamorphic squeeze.
+- Motion blur comes from the same mechanism: each sample reads the camera, focus and zoom at its own instant.
 
-En exploration, l'aperçu tourne avec peu d'échantillons. Dès que la caméra s'arrête, l'image s'affine progressivement jusqu'au nombre cible. L'export peut monter jusqu'à 1024 échantillons par image.
+While exploring, the preview runs with few samples. As soon as the camera stops, the image refines progressively up to the target count. Export can go up to 1024 samples per frame.
 
-## Fonctions principales
+## Main features
 
-### Caméra et objectif
-- **Formats de capteur** du Super 8 au moyen format (Super 16, Super 35, Full Frame…). Le champ de vision horizontal, vertical et diagonal est calculé et affiché.
-- **Deux caméras** : une caméra d'exploration libre et une caméra de tournage cadrée au rapport du capteur.
-- **34 objectifs**, dont 24 séries réelles (ARRI, Cooke, Zeiss, Leica, Canon, anamorphiques, zooms, vintage), avec leurs focales, leur ouverture max., leur distance de mise au point minimale et leurs défauts optiques.
-- **Profondeur de champ** physique : ouverture de f/1.2 à f/22, mise au point en mètres ou par clic sur la scène, affichage de l'hyperfocale et des limites de netteté.
-- **Bokeh** paramétrable : disque ou polygone à N lames, arrondi, onion rings, cat-eye, swirl, aberration sphérique, anamorphique.
-- **Tilt / shift** : décentrement par frustum asymétrique, bascule de Scheimpflug (plan de netteté incliné).
+### Camera and lens
+- **Sensor formats** from Super 8 to medium format (Super 16, Super 35, Full Frame…). Horizontal, vertical and diagonal field of view are computed and displayed.
+- **Two cameras**: a free exploration camera and a shooting camera framed to the sensor's aspect ratio.
+- **34 lenses**, including 24 real-world series (ARRI, Cooke, Zeiss, Leica, Canon, anamorphics, zooms, vintage), with their focal lengths, maximum aperture, minimum focus distance and optical flaws.
+- Physical **depth of field**: aperture from f/1.2 to f/22, focus in meters or by clicking on the scene, hyperfocal distance and depth-of-field limits displayed.
+- Configurable **bokeh**: disc or N-blade polygon, blade rounding, onion rings, cat-eye, swirl, spherical aberration, anamorphic.
+- **Tilt / shift**: shift through an asymmetric frustum, Scheimpflug tilt (inclined focal plane).
 
-### Timeline de plan
-- Pistes séparées : position X / Y / Z, pan / tilt / roll, mise au point, zoom.
-- Éditeur de courbes à poignées Bézier, avec des clés Bézier, linéaires ou en palier.
-- Mise au point sur une échelle de bague de map (en dioptries), zoom sur une échelle logarithmique.
-- **Mode enregistrement** : on bouge la caméra ou on tire la bague de map à la main, et les clés se posent.
-- Lecture, scrub, boucle, image par image.
+### Shot timeline
+- Separate tracks: X / Y / Z position, pan / tilt / roll, focus, zoom.
+- Curve editor with Bézier handles, and Bézier, linear or hold keys.
+- Focus drawn on a focus-ring scale (in diopters), zoom on a logarithmic scale.
+- **Record mode**: move the camera or pull focus by hand, and keys are set.
+- Playback, scrubbing, looping, frame by frame.
 
-### Obturateur et défauts de caméra
-- Angle d'obturation de 0 à 360°, cadences de 23,976 à 60 i/s.
+### Shutter and camera defects
+- Shutter angle from 0 to 360°, frame rates from 23.976 to 60 fps.
 - Rolling shutter, gate weave.
 
-### Optique et pellicule
-Tout reste en lumière linéaire jusqu'à l'affichage. Un gain des hautes lumières pousse les splats au-delà de 1.0 pour que le bloom et la halation réagissent.
-- Bloom, halation, étoiles de diffraction (liées aux lames), streaks anamorphiques, ghosts, lens dirt.
-- Vignettage, distorsion, aberration chromatique.
-- Bruit capteur lié à l'ISO (100 à 12800), grain de pellicule.
-- Tone mapping (ACES, Reinhard ou aucun), exposition en EV.
-- 9 **émulsions** originales inspirées de familles de pellicules (diapo, négatif ciné, bleach bypass, noir et blanc…).
-- **Étalonnage** : balance des blancs, contraste, saturation, lift / gamma / gain avec couleur.
-- **Looks** LUT `.cube`.
+### Optics and film
+Everything stays scene-linear until display. A highlight gain pushes splats above 1.0 so bloom and halation can react.
+- Bloom, halation, diffraction starbursts (tied to the blades), anamorphic streaks, ghosts, lens dirt.
+- Vignetting, distortion, chromatic aberration.
+- ISO-dependent sensor noise (100 to 12800), film grain.
+- Tone mapping (ACES, Reinhard or none), exposure in EV.
+- 9 original **film stocks** inspired by film families (slide, cinema negative, bleach bypass, black and white…).
+- **Color grading**: white balance, contrast, saturation, lift / gamma / gain with color.
+- `.cube` LUT **looks**.
 
-### Aides au tournage
-- Focus peaking, zébras, grille des tiers, zones de sécurité, masques de format.
-- Placement de la scène (position, rotation, échelle) et position de la caméra au chiffre.
+### On-set aids
+- Focus peaking, zebras, rule-of-thirds grid, safe areas, format masks.
+- Scene placement (position, rotation, scale) and numeric camera position.
 
 ### Export
-- **Séquence PNG 16 bits** (encodeur maison, sans passer par un canvas 8 bits) : rendu déterministe, fichiers `shot_00001.png`, écriture dans un dossier choisi (File System Access) ou en ZIP, avec progression, annulation et reprise.
-- **Aperçu MP4** H.264 / H.265 par WebCodecs et [Mediabunny](https://mediabunny.dev). C'est un aperçu 8 bits : la séquence PNG 16 bits reste le master.
-- À la fin d'une séquence, l'app affiche des **commandes `ffmpeg`** prêtes à copier pour produire un ProRes 4444 ou un H.265 10 bits.
+- **16-bit PNG sequence** (custom encoder, never goes through an 8-bit canvas): deterministic rendering, `shot_00001.png` files, written to a chosen folder (File System Access) or as a ZIP, with progress, cancel and resume.
+- **MP4 preview** in H.264 / H.265 via WebCodecs and [Mediabunny](https://mediabunny.dev). This is an 8-bit preview: the 16-bit PNG sequence remains the master.
+- At the end of a sequence, the app shows ready-to-copy **`ffmpeg` commands** to produce a ProRes 4444 or 10-bit H.265 file.
 
-### Confort
-- **Projet JSON** : scène, caméra, objectif, timeline et effets, à enregistrer et rouvrir.
-- **Raccourcis clavier** (aide avec `?`).
-- **Télécommande sur téléphone** : sur le réseau local en HTTPS, avec un QR code. Le Mac fait le rendu, le téléphone pilote le transport, les clés, la focale, le diaph et la map.
+### Comfort
+- **JSON project**: scene, camera, lens, timeline and effects, saved and reopened.
+- **Keyboard shortcuts** (help with `?`).
+- **Phone remote**: over the local network in HTTPS, with a QR code. The Mac renders, the phone drives transport, keys, focal length, aperture and focus.
 
-## Démarrage
+> The interface is currently in French.
 
-Prérequis : macOS sur Apple Silicon, Chrome récent (WebGPU), Node.js.
+## Getting started
+
+Requirements: macOS on Apple Silicon, a recent Chrome (WebGPU), Node.js.
 
 ```bash
 npm install
 npm run dev          # http://localhost:5173
 ```
 
-Glissez ensuite une scène `.ply` sur la fenêtre (le format `.ply` est le seul testé pour l'instant ; les autres formats passent par le chargeur PlayCanvas). Glissez un `.json` pour rouvrir un projet.
+Then drop a `.ply` scene on the window (`.ply` is the only format tested so far; other formats go through the PlayCanvas loader). Drop a `.json` to reopen a project. Small test scenes are included in `samples/`.
 
-Pour piloter depuis un téléphone sur le même réseau :
-
-```bash
-npm run dev:phone    # HTTPS auto-signé, adresse et QR code affichés dans l'app (bouton « Téléphone »)
-```
-
-Autres commandes :
+To drive the app from a phone on the same network:
 
 ```bash
-npm test             # tests Vitest (optique, timeline, export, projet, télécommande)
-npm run build        # vérification des types et build
+npm run dev:phone    # self-signed HTTPS; address and QR code shown in the app ("Téléphone" button)
 ```
 
-Les scènes de test vont dans `samples/`, qui est ignoré par git.
+Other commands:
 
-## Raccourcis utiles
+```bash
+npm test             # Vitest tests (optics, timeline, export, project, remote)
+npm run build        # type check and build
+```
 
-| Touche | Action |
+## Useful shortcuts
+
+| Key | Action |
 |---|---|
-| `E` / `T` | Vue exploration / vue tournage |
-| `Espace` | Lecture / pause |
-| `R` | Mode enregistrement |
-| `K` / `C` | Poser une clé (tout / caméra seule) |
-| `←` `→` | Image précédente / suivante (`Maj` : 1 s) |
-| `[` `]` | Ouvrir / fermer d'un tiers de diaph |
+| `E` / `T` | Exploration view / shooting view |
+| `Space` | Play / pause |
+| `R` | Record mode |
+| `K` / `C` | Set a key (everything / camera only) |
+| `←` `→` | Previous / next frame (`Shift`: 1 s) |
+| `[` `]` | Open / close by a third of a stop |
 | `P` | Focus peaking |
-| `X` | Fenêtre d'export |
-| `Cmd S` / `Cmd O` | Enregistrer / ouvrir un projet |
-| `?` | Toutes les touches |
+| `X` | Export window |
+| `Cmd S` / `Cmd O` | Save / open a project |
+| `?` | All shortcuts |
 
 ## Architecture
 
 ```
 src/
-  optics/     maths pures et testées : FOV, CoC, hyperfocale, Scheimpflug, ouverture, flares, émulsions, étalonnage
-  render/     pipeline WebGPU : accumulation multi-échantillons, post-traitement (WGSL), picking
-  timeline/   courbes Bézier, pistes, plan, contrôleur de lecture et d'enregistrement
-  export/     PNG 16 bits, ZIP, MP4, séquence, reprise
-  project/    format de projet JSON
-  remote/     protocole et page de télécommande
-  ui/         panneaux, timeline, export, raccourcis
-  presets/    objectifs et émulsions (JSON)
+  optics/     pure, tested math: FOV, CoC, hyperfocal, Scheimpflug, aperture, flares, film stocks, grading
+  render/     WebGPU pipeline: multi-sample accumulation, post-processing (WGSL), picking
+  timeline/   Bézier curves, tracks, shot, playback and record controller
+  export/     16-bit PNG, ZIP, MP4, sequence, resume
+  project/    JSON project format
+  remote/     remote protocol and phone page
+  ui/         panels, timeline, export, shortcuts
+  presets/    lenses and film stocks (JSON)
+tools/        test scene generators and measurement scripts
 ```
 
-Stack : [Vite](https://vite.dev), TypeScript, [PlayCanvas Engine](https://playcanvas.com) 2.23 avec le device WebGPU, shaders WGSL, Vitest.
+Stack: [Vite](https://vite.dev), TypeScript, [PlayCanvas Engine](https://playcanvas.com) 2.23 with the WebGPU device, WGSL shaders, Vitest.
 
-## Limites connues
+## Known limitations
 
-- Pas de rendu par tuiles : la résolution d'export est bornée par la taille de texture maximale du GPU.
-- L'export est reproductible à ~0,02 % près (ordre des splats à profondeur égale dans PlayCanvas).
-- Les caractères des objectifs réels et les émulsions sont réglés à l'œil, pas mesurés.
-- Pas de 4DGS, pas d'encodage de finition dans le navigateur (passer par la commande `ffmpeg` fournie).
+- No tiled rendering: export resolution is capped by the GPU's maximum texture size.
+- Export is reproducible to within ~0.02% (ordering of splats at equal depth in PlayCanvas).
+- Real-lens characters and film stocks are tuned by eye, not measured.
+- No 4DGS, no finishing-grade encoding in the browser (use the provided `ffmpeg` command).
 
-## Pistes
+## Roadmap
 
-Lumières ajoutées dans la scène, préréglages ease in / ease out sur les clés, plusieurs scènes dans un même plan, export EXR.
+Lights added to the scene, ease in / ease out presets on keys, several scenes in one shot, EXR export.
