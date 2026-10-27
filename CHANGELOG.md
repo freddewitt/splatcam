@@ -4,9 +4,13 @@ All notable changes to SplatCam. Format based on [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- MIT license.
+
 ### Planned
 - Lights added to the scene (point / spot, then surface orientation, then shadows).
 - Ease in / ease out / ease in-out presets on timeline keys.
+- ProRes export with a choice of profile and bit depth: 422 Proxy / LT / 422 / HQ (10-bit) and 4444 / 4444 XQ (12-bit).
 - Several scenes in one shot.
 
 ## [0.1.0] - 2026-10-27

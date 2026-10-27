@@ -137,4 +137,8 @@ Stack: [Vite](https://vite.dev), TypeScript, [PlayCanvas Engine](https://playcan
 
 ## Roadmap
 
-Lights added to the scene, ease in / ease out presets on keys, several scenes in one shot, EXR export.
+Lights added to the scene, ease in / ease out presets on keys, ProRes export (10-bit and 12-bit profiles), several scenes in one shot, EXR export.
+
+## License
+
+[MIT](LICENSE)
