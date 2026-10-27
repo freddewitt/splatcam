@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5173",
-    "build": "tsc --noEmit && vite build",
-    "test": "vitest run"
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && vite build",
+    "test": "vitest run",
+    "dev:phone": "SPLATCAM_HTTPS=1 vite --host --port 5173"
   },
   "dependencies": {
     "mediabunny": "^1.62.1",
     "playcanvas": "^2.23.3"
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@webgpu/types": "^0.1.74",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",

@@ -58,6 +58,15 @@
     #project .status { color: #9c9; font-size: 11px; white-space: pre-line; background: #000b; border-radius: 4px; }
     #project .status:empty { display: none; }
     #project .status.err { color: #f88; }
+    #remote { position: fixed; top: 76px; left: 212px; width: 280px; display: grid; gap: 4px; align-content: start; }
+    #remote > button { padding: 4px 8px; min-height: 30px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
+    #remote > button.on { background: #357; border-color: #79c; color: #fff; }
+    #remote .card { padding: 8px; background: #000d; border-radius: 6px; display: grid; gap: 6px; font-size: 12px; }
+    #remote .card.hidden { display: none; }
+    #remote .ok { color: #9c9; }
+    #remote .warn { color: #fc8; }
+    #remote .small { color: #999; font-size: 11px; }
+    #remote textarea { width: 100%; box-sizing: border-box; background: #111; color: #9c9; border: 1px solid #555; border-radius: 4px; font: 11px ui-monospace, Menlo, monospace; resize: none; }
     #shortcuts { position: fixed; inset: 0; background: #000a; display: grid; place-items: center; z-index: 11; }
     #shortcuts.hidden { display: none; }
     #shortcuts .card { max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box; padding: 14px; background: #181818; border: 1px solid #444; border-radius: 8px; display: grid; gap: 8px; }
@@ -65,16 +74,30 @@
     #shortcuts td { padding: 2px 10px 2px 0; }
     #shortcuts kbd { background: #333; border: 1px solid #555; border-radius: 3px; padding: 1px 6px; color: #fff; }
     #shortcuts button { padding: 8px; min-height: 36px; background: #2228; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
+    #panel-toggle { display: none; position: fixed; top: 8px; right: 8px; z-index: 6; padding: 6px 12px; min-height: 36px; background: #000b; color: #ddd; border: 1px solid #555; border-radius: 4px; font: inherit; }
+    /* Écran étroit (téléphone, petite tablette) : le panneau devient une feuille plein écran qu'on ouvre à la demande. */
+    @media (max-width: 760px) {
+      #panel-toggle { display: block; }
+      #panel { display: none; z-index: 5; background: #141414; top: 52px; right: 8px; left: 8px; width: auto; max-height: calc(100dvh - 60px); }
+      body.panel-open #panel { display: grid; }
+      #hud { max-width: calc(100vw - 120px); overflow: hidden; white-space: nowrap; }
+      #remote { left: 8px; right: 8px; width: auto; top: 112px; z-index: 4; }
+      #project { z-index: 4; }
+      #timeline canvas { height: 150px; }
+      #hint { font-size: 13px; padding: 0 24px; }
+    }
     #hint { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; font-size: 16px; color: #888; text-align: center; }
   </style>
 </head>
 <body>
   <canvas id="app"></canvas>
   <div id="hud">…</div>
+  <button id="panel-toggle" type="button">Réglages</button>
   <div id="panel"></div>
   <div id="timeline"></div>
   <div id="export"></div>
   <div id="project"></div>
+  <div id="remote"></div>
   <div id="shortcuts" class="hidden"></div>
   <div id="hint">Glisse un fichier .ply / .sog / .splat / .spz ici</div>
   <script type="module" src="/src/main.ts"></script>

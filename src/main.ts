@@ -20,6 +20,8 @@ import { getStock } from './optics/film-stock';
 import { parseProject, projectFileName, serializeProject, type OrbitData, type Project, type ProjectSettings } from './project/project';
 import { createProjectUi } from './ui/project-ui';
 import { createShortcuts } from './ui/shortcuts';
+import { startRemoteHost } from './remote/host';
+import { createRemoteUi } from './ui/remote-ui';
 import { DIRT_SIZE } from './render/post';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
@@ -42,6 +44,13 @@ window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); })
 // État réglable depuis le panneau.
 const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
   aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, post: { ...DEFAULT_POST }, lutName: '', dirtName: '', presetId: '' };
+
+// Écran étroit : le panneau de réglages s'ouvre et se ferme avec ce bouton (CSS, index.html).
+const panelToggle = document.getElementById('panel-toggle')!;
+panelToggle.addEventListener('click', () => {
+  const open = document.body.classList.toggle('panel-open');
+  panelToggle.textContent = open ? 'Fermer' : 'Réglages';
+});
 
 // Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
 app.autoRender = false;
@@ -342,6 +351,19 @@ createShortcuts({
   openProject: () => projectUi.open(),
   openExport: () => (document.querySelector('#export .open') as HTMLElement | null)?.click(),
 }, document.getElementById('shortcuts')!);
+
+// Télécommande : le téléphone envoie des commandes (src/remote/), l'application sur le Mac les applique.
+void startRemoteHost({
+  timeline,
+  setMode(mode) { if (state.mode !== mode) { state.mode = mode; panel.sync(); applyCameras(); } },
+  fps: () => state.fps,
+  focal: () => state.focal,
+  setFocal(mm) { state.focal = Math.round(mm * 10) / 10; panel.sync(); applyCameras(); },
+  fNumber: () => state.fNumber,
+  setFNumber(f) { state.fNumber = f; state.presetId = ''; panel.sync(); applyCameras(); },
+  focusM: () => state.focusM,
+  setFocusM(m) { state.focusM = m; panel.sync(); applyCameras(); },
+}, () => state.mode).then((host) => { if (host) createRemoteUi(document.getElementById('remote')!, host); });
 
 // Mise au point par clic (picking sur les centres de splats pondérés par l'opacité).
 let pickData: PickData | null = null;
