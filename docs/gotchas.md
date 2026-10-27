@@ -71,6 +71,8 @@
 - `vite.config.ts` : importer le plugin AVEC l'extension (`./tools/remote-plugin.ts`, sinon avertissement `configLoader: native`) ; il est typé par `tsconfig.node.json` (types `node`), distinct du `tsconfig.json` de `src/`.
 - Panneau sur écran étroit (≤ 760 px) : feuille ouverte par `#panel-toggle` (classe `panel-open` sur `body`), fond OPAQUE (sinon la timeline et les boutons transparaissent).
 
+- Précision du master : en export, le sous-rendu (`sceneRT`) et la source du post (`src`) passent en RGBA32F si `device.textureFloatBlendable && textureFloatFilterable` (vrai sur Apple Silicon). En RGBA16F, le PNG n'avait que ~12 bits utiles (8 515 niveaux distincts contre 56 847 mesurés sur Tribunal, 1280×720). L'aperçu reste en 16F. `beginStill` libère les cibles même à taille égale pour changer de format.
+
 ## Interface (refonte du 2026-10-27)
 - Le canvas est positionné en CSS dans l'espace libre (barre du haut, panneau, timeline) avec `FILLMODE_NONE` : un `<canvas>` est un élément remplacé, `left`/`right` ne l'étirent PAS (il garde 300×150), il faut `width`/`height` explicites (`calc(100vw - var(--side-w))`). Redimensionnement : `ResizeObserver` → `app.updateCanvasSize()` regroupé par `requestAnimationFrame`. La hauteur de la timeline est publiée dans `--tl-h`.
 - Clic de mise au point : coordonnées relatives à `canvas.getBoundingClientRect()` (le canvas ne commence plus en 0,0).

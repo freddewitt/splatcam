@@ -566,6 +566,7 @@ export class PostProcessor {
   private halaChain: Chain | null = null;
   private w = 0;
   private h = 0;
+  private precise = false;
   private lutTex: pc.Texture;
   private lutSize = 0;
   private stock: FilmStock | null = null;
@@ -649,9 +650,9 @@ export class PostProcessor {
     this.dirtReady = true;
   }
 
-  private makeTarget(w: number, h: number, name: string): Target {
+  private makeTarget(w: number, h: number, name: string, format: number = pc.PIXELFORMAT_RGBA16F): Target {
     const tex = new pc.Texture(this.device, {
-      name, width: w, height: h, format: pc.PIXELFORMAT_RGBA16F, mipmaps: false,
+      name, width: w, height: h, format, mipmaps: false,
       minFilter: pc.FILTER_LINEAR, magFilter: pc.FILTER_LINEAR,
       addressU: pc.ADDRESS_CLAMP_TO_EDGE, addressV: pc.ADDRESS_CLAMP_TO_EDGE,
     });
@@ -667,12 +668,15 @@ export class PostProcessor {
 
   private freeAll(ts: Target[]): void { for (const t of ts) { t.rt.destroy(); t.tex.destroy(); } }
 
-  private ensure(w: number, h: number): void {
-    if (w === this.w && h === this.h && this.src) return;
+  private ensure(w: number, h: number, precise: boolean): void {
+    if (w === this.w && h === this.h && this.src && precise === this.precise) return;
+    this.precise = precise;
     this.freeAll(this.src ? [this.src] : []);
     for (const c of [this.bloomChain, this.halaChain]) if (c) { this.freeAll(c.down); this.freeAll(c.up); }
     this.freeFlare();
-    this.src = this.makeTarget(w, h, 'splatcam-post-src');
+    // La source de la composition porte l'image principale : RGBA32F en export (vrai 16 bits en sortie).
+    // Bloom, halation et flares restent en 16F : lumière ajoutée, floue, sans besoin de précision.
+    this.src = this.makeTarget(w, h, 'splatcam-post-src', precise ? pc.PIXELFORMAT_RGBA32F : pc.PIXELFORMAT_RGBA16F);
     this.bloomChain = this.makeChain(w, h, 'splatcam-bloom');
     this.halaChain = this.makeChain(w, h, 'splatcam-hala');
     this.w = w; this.h = h;
@@ -787,7 +791,7 @@ export class PostProcessor {
    * `exposure` : facteur de normalisation des échantillons ; `aspect` et `tanV` : cadre et demi-champ vertical (tan).
    */
   run(accum: pc.Texture, w: number, h: number, exposure: number, aspect: number, tanV: number, p: PostParams, rect: pc.Vec4, target: pc.RenderTarget | null = null): void {
-    this.ensure(w, h);
+    this.ensure(w, h, target !== null && this.device.textureFloatFilterable);
     const { scope } = this.device;
     const src = this.src!;
 

@@ -240,7 +240,11 @@ export class DofRenderer {
     }
     this.releaseTargets();
     this.sceneRT?.colorBuffer?.destroy();
-    const scene = this.makeTarget(w, h, pc.PIXELFORMAT_RGBA16F, 'splatcam-scene', pc.FILTER_LINEAR);
+    // Aperçu : sous-rendu en RGBA16F (11 bits de mantisse, assez pour l'écran, moitié moins de bande passante).
+    // Export : RGBA32F si le GPU sait le mélanger et le filtrer (Apple Silicon : oui), sinon le PNG « 16 bits »
+    // n'aurait que ~12 bits utiles.
+    const fmt = this.fixed && this.precise ? pc.PIXELFORMAT_RGBA32F : pc.PIXELFORMAT_RGBA16F;
+    const scene = this.makeTarget(w, h, fmt, 'splatcam-scene', pc.FILTER_LINEAR);
     this.sceneRT = scene.rt;
     this.accum = [0, 1].map((i) => this.makeTarget(w, h, pc.PIXELFORMAT_RGBA32F, `splatcam-accum-${i}`));
     this.w = w; this.h = h; this.count = 0; this.cur = 0;
@@ -254,6 +258,9 @@ export class DofRenderer {
     const h = Math.max(2, Math.round(cw / ch > aspect ? ch : cw / aspect));
     return { x: Math.round((cw - w) / 2), y: Math.round((ch - h) / 2), w, h };
   }
+
+  /** Export en pleine précision possible : sous-rendu RGBA32F mélangeable et filtrable. */
+  get precise(): boolean { return this.device.textureFloatBlendable && this.device.textureFloatFilterable; }
 
   /** Détruit les cibles HDR (scène + 2 accumulateurs) : libère la mémoire unifiée du Mac. */
   private releaseTargets(): void {
@@ -364,6 +371,7 @@ export class DofRenderer {
    */
   beginStill(w: number, h: number): void {
     this.endStill();
+    this.releaseTargets();   // même taille que l'aperçu : on change quand même de format (32F)
     this.fixed = { w, h };
     this.ensureTargets(w, h);
     const out = this.makeTarget(w, h, pc.PIXELFORMAT_RGBA32F, 'splatcam-still-out');
