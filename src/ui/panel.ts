@@ -7,11 +7,17 @@ export interface PanelState {
   sensorId: string;
   focal: number;
   metersPerUnit: number;
+  /** Ouverture f/N. */
+  fNumber: number;
+  /** Distance de mise au point, mètres. */
+  focusM: number;
+  /** Échantillons visés à l'arrêt. */
+  samples: number;
 }
 
 export interface Panel {
   /** Met à jour les valeurs affichées (FOV, distance à la cible). */
-  show(fov: Fov, targetDistM: number): void;
+  show(fov: Fov, targetDistM: number, extra?: string): void;
   /** Reflète l'état (ex. après changement de mode au clavier). */
   sync(): void;
 }
@@ -59,6 +65,22 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     if (Number.isFinite(v) && v > 0) { state.metersPerUnit = v; onChange(); }
   });
 
+  const fnum = el<HTMLSelectElement>('select');
+  for (const n of [1.2, 1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22]) fnum.append(el<HTMLOptionElement>('option', { value: String(n) }, `f/${n}`));
+  fnum.addEventListener('change', () => { state.fNumber = parseFloat(fnum.value); onChange(); });
+
+  const focus = el<HTMLInputElement>('input', { type: 'number', min: '0.1', step: '0.1' });
+  focus.addEventListener('input', () => {
+    const v = parseFloat(focus.value);
+    if (Number.isFinite(v) && v > 0) { state.focusM = v; onChange(); }
+  });
+
+  const samples = el<HTMLInputElement>('input', { type: 'number', min: '1', max: '1024', step: '1' });
+  samples.addEventListener('input', () => {
+    const v = parseInt(samples.value, 10);
+    if (Number.isFinite(v) && v >= 1) { state.samples = Math.min(1024, v); onChange(); }
+  });
+
   const readout = el('div', { class: 'readout' });
 
   const field = (label: string, ...inputs: HTMLElement[]) => {
@@ -70,7 +92,10 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     modeRow,
     field('Capteur', sensor),
     field('Focale (mm)', focalRange, focalNum),
+    field('Ouverture', fnum),
+    field('Mise au point (m)', focus),
     field('Échelle (m / unité)', scale),
+    field('Échantillons (cible)', samples),
     readout,
   );
 
@@ -80,15 +105,18 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     focalNum.value = String(state.focal);
     focalRange.value = String(Math.min(300, state.focal));
     scale.value = String(state.metersPerUnit);
+    fnum.value = String(state.fNumber);
+    focus.value = String(+state.focusM.toFixed(3));
+    samples.value = String(state.samples);
     root.classList.toggle('exploring', state.mode === 'explore');
   }
   sync();
 
   return {
     sync,
-    show(fov, targetDistM) {
+    show(fov, targetDistM, extra = '') {
       const d = (r: number) => `${rad2deg(r).toFixed(1)}°`;
-      readout.textContent = `FOV  H ${d(fov.h)} · V ${d(fov.v)} · D ${d(fov.d)}\nCible à ${targetDistM.toFixed(2)} m`;
+      readout.textContent = `FOV  H ${d(fov.h)} · V ${d(fov.v)} · D ${d(fov.d)}\nCible à ${targetDistM.toFixed(2)} m${extra ? '\n' + extra : ''}`;
     },
   };
 }

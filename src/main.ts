@@ -1,6 +1,8 @@
 import * as pc from 'playcanvas';
 import { DEFAULT_SENSOR_ID, getSensor, rad2deg, sensorFov } from './optics/sensor';
 import { createPanel, type PanelState } from './ui/panel';
+import { DofRenderer } from './render/dof-renderer';
+import { pickDepth, type PickData } from './render/pick';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const hud = document.getElementById('hud')!;
@@ -20,7 +22,11 @@ app.setCanvasResolution(pc.RESOLUTION_AUTO);
 window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); });
 
 // État réglable depuis le panneau.
-const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1 };
+const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64 };
+
+// Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
+app.autoRender = false;
+let dirty = true;
 
 // Caméra de fond : efface tout l'écran (les bandes noires du cadre de tournage).
 const bg = new pc.Entity('background');
@@ -32,7 +38,12 @@ const explore = new pc.Entity('explore');
 explore.addComponent('camera', { clearColor: new pc.Color(0.07, 0.07, 0.07), fov: 50, nearClip: 0.05, farClip: 1000, priority: 1 });
 app.root.addChild(explore);
 const shoot = new pc.Entity('shoot');
-shoot.addComponent('camera', { clearColor: new pc.Color(0.07, 0.07, 0.07), nearClip: 0.05, farClip: 1000, priority: 1 });
+// Le tournage rend en HDR linéaire dans une cible RGBA16F : pas de gamma ni de tone mapping caméra.
+// Fond ≈ 0,07 une fois encodé sRGB (0,006 linéaire).
+shoot.addComponent('camera', {
+  clearColor: new pc.Color(0.006, 0.006, 0.006), nearClip: 0.05, farClip: 1000, priority: 1,
+  gammaCorrection: pc.GAMMA_NONE, toneMapping: pc.TONEMAP_LINEAR,
+});
 app.root.addChild(shoot);
 
 // Orbite de debug : angles + distance autour d'une cible (unités de scène), un état par caméra.
@@ -62,33 +73,44 @@ function applyCameras() {
   sc.fov = rad2deg(fov.v);
   sc.aspectRatioMode = pc.ASPECT_MANUAL;
   sc.aspectRatio = sensor.width / sensor.height;
-
-  // Cadre : on remplit le canvas en conservant le rapport du capteur.
-  const ca = canvas.clientWidth / Math.max(1, canvas.clientHeight);
-  const sa = sensor.width / sensor.height;
-  const w = ca > sa ? sa / ca : 1, h = ca > sa ? 1 : ca / sa;
-  const rect = new pc.Vec4((1 - w) / 2, (1 - h) / 2, w, h);
-  sc.rect = rect;
-  sc.scissorRect = rect;
+  // Le cadre au rapport du capteur est produit par le rendu HDR (cible à ce rapport) puis affiché
+  // en lettre-boîte par DofRenderer ; la caméra elle-même remplit sa cible.
+  if (shooting) {
+    dof.setLens({
+      fovV: rad2deg(fov.v), aspect: sensor.width / sensor.height, focalMm: state.focal,
+      fNumber: state.fNumber, focusM: state.focusM, metersPerUnit: state.metersPerUnit,
+    });
+  } else {
+    dof.detach();
+  }
+  dof.targetSamples = state.samples;
+  dirty = true;
 
   poseCamera('explore');
   poseCamera('shoot');
   panel.show(fov, orbits[state.mode].dist * state.metersPerUnit);
 }
 
+const dof = new DofRenderer(app, shoot);
 const panel = createPanel(state, applyCameras);
+applyCameras();
 
-let drag: { x: number; y: number; pan: boolean } | null = null;
+let drag: { x: number; y: number; pan: boolean; moved: number } | null = null;
 canvas.addEventListener('pointerdown', (e) => {
-  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, moved: 0 };
   canvas.setPointerCapture(e.pointerId);
 });
-canvas.addEventListener('pointerup', () => { drag = null; });
+canvas.addEventListener('pointerup', (e) => {
+  // Clic sans glissement en mode tournage : mise au point sur la surface cliquée.
+  if (drag && !drag.pan && drag.moved < 4 && state.mode === 'shoot') focusAt(e.clientX, e.clientY);
+  drag = null;
+});
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('pointermove', (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   drag.x = e.clientX; drag.y = e.clientY;
+  drag.moved += Math.abs(dx) + Math.abs(dy);
   const o = orbits[state.mode], cam = cams[state.mode];
   if (drag.pan) {
     const k = o.dist * 0.0015;
@@ -112,6 +134,43 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 't') { state.mode = 'shoot'; panel.sync(); applyCameras(); }
 });
 
+// Mise au point par clic (picking sur les centres de splats pondérés par l'opacité).
+let pickData: PickData | null = null;
+
+/** Données de picking d'un asset : centres, et opacité / échelle si les données PLY brutes sont disponibles. */
+function buildPickData(resource: pc.GSplatResource): PickData {
+  const out: PickData = { centers: resource.centers };
+  const raw = resource.gsplatData as unknown as { getProp?: (n: string) => ArrayLike<number> | null } | undefined;
+  try {
+    const op = raw?.getProp?.('opacity'), s0 = raw?.getProp?.('scale_0'), s1 = raw?.getProp?.('scale_1'), s2 = raw?.getProp?.('scale_2');
+    if (op) out.opacity = Float32Array.from(op, (v) => 1 / (1 + Math.exp(-v))); // logit → opacité
+    if (s0 && s1 && s2) out.sigma = Float32Array.from(s0, (v, i) => Math.exp((v + s1[i] + s2[i]) / 3)); // échelles en log
+  } catch { /* formats compressés : centres seuls */ }
+  return out;
+}
+
+function focusAt(clientX: number, clientY: number) {
+  if (!pickData) return;
+  const lens = dof.currentLens;
+  if (!lens) return;
+  // Pixels CSS → NDC dans le cadre de tournage (cadre centré, lettre-boîte).
+  const k = device.width / canvas.clientWidth;
+  const r = dof.frameRect(lens.aspect);
+  const nx = ((clientX * k - r.x) / r.w) * 2 - 1;
+  const ny = 1 - (((clientY * k - (device.height - r.y - r.h)) / r.h) * 2);
+  if (Math.abs(nx) > 1 || Math.abs(ny) > 1) return; // clic dans les bandes noires
+  const p11 = 1 / Math.tan((lens.fovV * Math.PI) / 360), p00 = p11 / lens.aspect;
+  const local = new pc.Vec3(nx / p00, ny / p11, -1).normalize();
+  const dir = shoot.getRotation().transformVector(local);
+  const fwd = shoot.forward, pos = shoot.getPosition();
+  const tolAngle = (3 * 2) / (r.h * p11); // ≈ 3 px d'angle
+  const z = pickDepth(pickData, [pos.x, pos.y, pos.z], [fwd.x, fwd.y, fwd.z], [dir.x, dir.y, dir.z], tolAngle);
+  if (z === null) return;
+  state.focusM = z * state.metersPerUnit;
+  panel.sync();
+  applyCameras();
+}
+
 // Chargement par glisser-déposer.
 let current: pc.Entity | null = null;
 async function loadFile(file: File) {
@@ -128,6 +187,7 @@ async function loadFile(file: File) {
     // Cadrage robuste : la AABB brute est faussée par les splats aberrants,
     // on utilise les percentiles 2 à 98 % des centres.
     const centers = (asset.resource as pc.GSplatResource | null)?.centers;
+    pickData = asset.resource ? buildPickData(asset.resource as pc.GSplatResource) : null;
     if (centers && centers.length >= 3) {
       const n = centers.length / 3;
       const lo = new pc.Vec3(), hi = new pc.Vec3();
@@ -146,6 +206,8 @@ async function loadFile(file: File) {
         // Les exports courants se regardent depuis -Z : on se place devant la scène, pas derrière.
         o.yaw = 180;
       }
+      state.focusM = dist * state.metersPerUnit; // mise au point initiale sur la cible
+      panel.sync();
       applyCameras();
     }
     hint.textContent = '';
@@ -162,13 +224,20 @@ window.addEventListener('drop', (e) => {
 // HUD : FPS lissés sur 0,5 s.
 let frames = 0, last = performance.now();
 app.on('update', () => {
+  if (state.mode === 'explore') app.renderNextFrame = true;
+  else { dof.frame(dirty); dirty = false; }
   frames++;
   const now = performance.now();
   if (now - last >= 500) {
-    hud.textContent = `${((frames * 1000) / (now - last)).toFixed(0)} fps · ${device.deviceType}`;
+    const acc = state.mode === 'shoot' ? ` · ${dof.accumulated}/${state.samples} éch.` : '';
+    hud.textContent = `${((frames * 1000) / (now - last)).toFixed(0)} fps · ${device.deviceType}${acc}`;
     frames = 0; last = now;
   }
 });
 
-applyCameras();
+// Handle de debug pour les tests visuels (dev uniquement).
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__splatcam = { state, orbits, applyCameras, dof, panel, device, canvas };
+}
+
 app.start();
