@@ -25,5 +25,12 @@
 - Enregistrement en lecture : un geste à la main prime sur la piste pendant `HOLD_MS` (300 ms) puis la lecture reprend ; l'allègement Douglas-Peucker a lieu à l'arrêt (les gestes posent une clé par image).
 - Tests Chrome headless : puppeteer-core (hors projet, dans le scratchpad) + `/Applications/Google Chrome.app`, `--enable-unsafe-webgpu` ; `puppeteer` `mouse.click(x, y, { count: 2 })` pour un double-clic.
 
+## Flou de mouvement
+- Les instants des sous-rendus sont tirés uniformément sur [0, ρ + w) (ρ = lecture du rolling shutter, w = fenêtre d'exposition) ; la ligne y accepte [ρ·y, ρ·y + w) : l'exposition se normalise par w/(ρ+w), pas par le nombre d'échantillons seul. Masque CPU `rowAccepts` et WGSL à garder alignés.
+- `motion.apply(u)` pose la caméra ABSOLUMENT à chaque sous-rendu (position, Euler, fov) ; le moteur relit ensuite position / droite / haut. Origine capturée au premier appel, effacée par `restore()` (qui repasse par `poseCamera` et le fov de l'état).
+- Mouvement en delta (valeur(t+u) − valeur(t)) : la caméra posée à la main reste valide. Le fov change par sous-rendu (zoom) : P00 / P11, rayon d'ouverture, τ du tilt se recalculent par échantillon.
+- Ne jamais mettre de backtick dans un shader WGSL écrit en template literal JS (erreur de syntaxe TS qui pointe ailleurs).
+- Mesurer un flou : exposition d'affichage basse (`dof.exposure = 0.06`) pour ne pas écrêter, linéariser le PNG (sRGB inverse), écart-type pondéré → L = √(12 (σ² − σ0²)) ; ne mesurer que les rangées centrales d'une grille à profondeur constante.
+
 ## Export
 (vide)

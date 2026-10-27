@@ -60,5 +60,16 @@
 - Capture : `docs/captures/M4.png` (feuille de clés après enregistrement), `docs/captures/M4-courbes.png` (courbe de map, poignée, repères de bague). Réglages : Super 35 16:9, 35 mm, f/2.8, 16 éch., Tribunal3b_export_28000.ply, plan de 6 s, geste d'enregistrement décrit ci-dessus.
 - Prochaine étape : M5 (flou de mouvement par angle d'obturation : chaque échantillon d'ouverture reçoit son instant dans la fenêtre d'obturation et lit la timeline à cet instant ; rolling shutter, gate weave).
 
-## M5 à M8, M7bis
+## M5. Flou de mouvement et défauts de caméra
+- Statut : validé
+- Date : 2026-10-27
+- Commit : voir `git log` (commit « M5 : … »)
+- Ce qui marche : angle d'obturateur (0 à 360°, cadence 24 / 25 / 30 i/s ; 180° à 25 i/s = 1/50 s) : chaque sous-rendu d'ouverture reçoit un instant dans la fenêtre d'exposition (Halton base 5, indépendant de l'ouverture) et lit la timeline à cet instant (caméra X/Y/Z/pan/tilt/roll, map, zoom) ; rolling shutter (temps de lecture 0 à 40 ms, balayage haut → bas) ; gate weave (bruit lissé, translation + léger roulis, amplitude réglable). `src/optics/camera-defects.ts` (+7 tests), `src/render/dof-renderer.ts` (`Motion`, masque de ligne WGSL, normalisation), branchement dans `main.ts` (`updateMotion`), panneau « Obturateur et défauts ». 70 tests Vitest verts.
+- Mesures (Chrome headless, `samples/bokeh-grid.ply`, Full Frame 50 mm, f/16, pan linéaire 40°/s, 128 éch., cadre 1350 px = 32,7 px/°) : flou du point central 180° = 23,6 px (attendu 26,2) ; 360° = 50,5 px (attendu 52,4) ; décalage moyen 12,6 et 25,2 px (attendus 13,1 et 26,2) ; énergie conservée (1,00). Rolling shutter (180°, lecture 20 ms) : décalage moyen par rangée 19,5 / 25,7 / 30,2 px à 27 / 50 / 73 % de la hauteur (attendus 20,1 / 26,2 / 32,2). Zoom 35 → 105 mm en 1 s à 360° : traînées radiales nulles au centre, croissantes vers les bords (`M5-zoom.png`) ; caméra, FOV et focale rétablis après le rendu.
+- Approximatif : l'aperçu en mouvement (4 éch./image) montre un flou à 4 pas, il se lisse avec le raffinement ; en rolling shutter chaque ligne n'accepte qu'une fraction w/(ρ+w) des échantillons, d'où un léger étagement horizontal à faible N ; avec un obturateur à 0° et un rolling shutter, la fenêtre est portée à 10 % de la lecture ; amplitude du gate weave non calibrée sur une vraie caméra (0,4 % de la hauteur et 0,06° à ×1) ; le flou lit la timeline en DELTA par rapport à l'instant de l'image (caméra déplacée à la main = pas de saut) ; la fenêtre d'exposition démarre à l'instant de l'image (pas centrée) ; la cadence ne sert qu'à la durée d'exposition (l'export M7 la reprendra).
+- Décisions non évidentes : voir `docs/gotchas.md` (Flou de mouvement).
+- Captures : `docs/captures/M5.png` (flou 180°), `M5-rolling-shutter.png`, `M5-zoom.png`. Réglages : Full Frame 24×36, 50 mm (35 → 105 mm pour le zoom), f/16, map 6 m, exposition d'affichage 0,06 (HDR non écrêté), caméra à l'origine, plan de 1 s, pan 0 → 40° linéaire, tête de lecture à 0,5 s, 128 éch. ; M5-rolling-shutter : 180° + 20 ms.
+- Prochaine étape : M6 (optique et pellicule : vignettage, distorsion, aberration chromatique, bloom, halation, starbursts, streaks, ghosts, lens dirt, bruit ISO, grain, looks .cube) ; au passage, tone mapping (dette M2).
+
+## M6 à M8, M7bis
 - Statut : à faire

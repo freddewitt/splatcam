@@ -24,6 +24,11 @@ export interface PanelState {
   /** Tilt (y) et swing (x) de l'objectif, degrés. */
   tiltX: number;
   tiltY: number;
+  /** Cadence (i/s), angle d'obturateur (°), lecture du rolling shutter (ms), gate weave (0 = aucun, 1 = typique). */
+  fps: number;
+  shutterAngle: number;
+  readoutMs: number;
+  weave: number;
   /** Preset d'objectif appliqué en dernier ('' = réglage manuel). */
   presetId: string;
 }
@@ -131,13 +136,13 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
   });
 
   /** Curseur + valeur affichée ; toute modification manuelle quitte le preset. */
-  const slider = (label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void, fmt = (v: number) => String(+v.toFixed(2))) => {
+  const slider = (label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void, fmt = (v: number) => String(+v.toFixed(2)), keepPreset = false) => {
     const range = el<HTMLInputElement>('input', { type: 'range', min: String(min), max: String(max), step: String(step) });
     const val = el('b', { class: 'val' });
     const upd = () => { range.value = String(get()); val.textContent = fmt(get()); };
     range.addEventListener('input', () => {
       set(parseFloat(range.value));
-      state.presetId = ''; preset.value = '';
+      if (!keepPreset) { state.presetId = ''; preset.value = ''; }
       upd();
       onChange();
     });
@@ -169,6 +174,17 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     slider('Tilt (° ; + = netteté plus proche en bas)', -10, 10, 0.1, () => state.tiltY, (v) => { state.tiltY = v; }),
     slider('Swing (° ; + = netteté plus proche à droite)', -10, 10, 0.1, () => state.tiltX, (v) => { state.tiltX = v; }),
   ];
+  const fpsSel = el<HTMLSelectElement>('select');
+  for (const n of [24, 25, 30]) fpsSel.append(el<HTMLOptionElement>('option', { value: String(n) }, `${n} i/s`));
+  fpsSel.addEventListener('change', () => { state.fps = parseInt(fpsSel.value, 10); onChange(); });
+  const shutter = [
+    slider('Angle d\'obturateur (°)', 0, 360, 1, () => state.shutterAngle, (v) => { state.shutterAngle = v; },
+      (v) => (v === 0 ? 'aucun flou' : `${v}° · 1/${Math.round(360 / v * state.fps)} s`), true),
+    slider('Rolling shutter (ms de lecture)', 0, 40, 0.5, () => state.readoutMs, (v) => { state.readoutMs = v; },
+      (v) => (v === 0 ? 'global' : `${v} ms`), true),
+    slider('Gate weave', 0, 3, 0.05, () => state.weave, (v) => { state.weave = v; },
+      (v) => (v === 0 ? 'aucun' : `×${v.toFixed(2)}`), true),
+  ];
   const title = (t: string) => el('div', { class: 'sep' }, t);
 
   const readout = el('div', { class: 'readout' });
@@ -196,6 +212,9 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     ...shift,
     title('Tilt (Scheimpflug)'),
     ...tilt,
+    title('Obturateur et défauts'),
+    field('Cadence', fpsSel),
+    ...shutter,
     readout,
   );
 
@@ -208,6 +227,7 @@ export function createPanel(state: PanelState, onChange: () => void): Panel {
     fnum.value = String(state.fNumber);
     focus.value = String(+state.focusM.toFixed(3));
     samples.value = String(state.samples);
+    fpsSel.value = String(state.fps);
     ring.value = String(dioptersFromMeters(state.focusM));
     ringVal.textContent = state.focusM >= 500 ? '∞' : `${state.focusM.toFixed(2)} m`;
     zoomLog.value = String(zoomFromFocal(Math.min(Math.max(state.focal, 4), 300)));

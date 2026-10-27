@@ -7,6 +7,8 @@ import { DEFAULT_APERTURE } from './optics/aperture';
 import { focusThroughPoint, tiltGradient } from './optics/tilt';
 import { TimelineController, type TimelineEngine, type TrackValues } from './timeline/controller';
 import { dioptersFromMeters, focalFromZoom, metersFromDiopters, zoomFromFocal } from './timeline/shot';
+import { exposurePlan, gateWeave } from './optics/camera-defects';
+import { sampleShot } from './timeline/shot';
 import { createTimelineUI } from './ui/timeline-ui';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
@@ -28,7 +30,7 @@ window.addEventListener('resize', () => { app.resizeCanvas(); applyCameras(); })
 
 // État réglable depuis le panneau.
 const state: PanelState = { mode: 'explore', sensorId: DEFAULT_SENSOR_ID, focal: 35, metersPerUnit: 1, fNumber: 2.8, focusM: 5, samples: 64,
-  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, presetId: '' };
+  aperture: { ...DEFAULT_APERTURE }, shiftX: 0, shiftY: 0, tiltX: 0, tiltY: 0, fps: 25, shutterAngle: 180, readoutMs: 0, weave: 0, presetId: '' };
 
 // Rendu manuel : en exploration une image normale par tick, en tournage N sous-rendus accumulés.
 app.autoRender = false;
@@ -90,6 +92,7 @@ function applyCameras() {
       shiftNdc: { x: (2 * state.shiftX) / sensor.width, y: (2 * state.shiftY) / sensor.height },
       tiltDeg: { x: state.tiltX, y: state.tiltY },
     });
+    updateMotion();
   } else {
     dof.detach();
   }
@@ -131,6 +134,40 @@ const timelineEngine: TimelineEngine = {
   },
 };
 const timeline = new TimelineController(timelineEngine);
+
+// Flou de mouvement, rolling shutter, gate weave : chaque sous-rendu place la caméra à son instant dans
+// la fenêtre d'exposition. Le mouvement est lu comme un DELTA du plan par rapport à l'instant de l'image
+// (la caméra peut avoir été déplacée à la main : pas de saut), le gate weave s'y ajoute.
+let origin: { pos: pc.Vec3; pan: number; tilt: number; roll: number; focus: number; zoom: number; at: Partial<TrackValues> } | null = null;
+function updateMotion() {
+  const plan = exposurePlan(state.shutterAngle, state.fps, state.readoutMs);
+  if (!plan.active && state.weave <= 0) { dof.motion = null; return; }
+  dof.motion = {
+    plan,
+    apply(u) {
+      const o = orbits.shoot, sensor = getSensor(state.sensorId);
+      origin ??= {
+        pos: shoot.getPosition().clone(), pan: o.yaw, tilt: o.pitch, roll: o.roll,
+        focus: dioptersFromMeters(state.focusM), zoom: zoomFromFocal(state.focal), at: sampleShot(timeline.shot, timeline.time),
+      };
+      const now = sampleShot(timeline.shot, timeline.time + u);
+      const d = (id: keyof TrackValues) => (now[id] !== undefined && origin!.at[id] !== undefined ? now[id]! - origin!.at[id]! : 0);
+      const wv = gateWeave(timeline.time + u, state.weave);
+      shoot.setPosition(origin.pos.x + d('x'), origin.pos.y + d('y'), origin.pos.z + d('z'));
+      shoot.setEulerAngles(origin.tilt + d('tilt'), origin.pan + d('pan'), origin.roll + d('roll') + wv.rollDeg);
+      const focalMm = focalFromZoom(origin.zoom + d('zoom'));
+      const fovV = rad2deg(sensorFov(sensor, focalMm).v);
+      shoot.camera!.fov = fovV;
+      return { fovV, focalMm, focusM: metersFromDiopters(origin.focus + d('focus')), extraShiftNdc: { x: wv.x, y: wv.y } };
+    },
+    restore() {
+      origin = null;
+      poseCamera('shoot');
+      shoot.camera!.fov = rad2deg(sensorFov(getSensor(state.sensorId), state.focal).v);
+    },
+  };
+}
+updateMotion();
 createTimelineUI(document.getElementById('timeline')!, timeline);
 // Lancer la lecture depuis l'exploration bascule en tournage (seule vue où la timeline pilote la caméra).
 timeline.onChange(() => {

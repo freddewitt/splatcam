@@ -9,8 +9,27 @@
 
 import * as pc from 'playcanvas';
 import { apertureDiameter, apertureScale, shearTerm } from '../optics/dof';
+import { sampleTime, type ExposurePlan } from '../optics/camera-defects';
 import { isTilted, tiltGradient, tiltWarp, type Tilt } from '../optics/tilt';
 import { ApertureSampler, DEFAULT_APERTURE, apertureMask, type ApertureShape } from '../optics/aperture';
+
+/** Objectif à un instant donné du plan (flou de mouvement : zoom, map, gate weave). */
+export interface LensSample {
+  fovV: number;
+  focalMm: number;
+  focusM: number;
+  /** Décalage d'image supplémentaire (gate weave), NDC. */
+  extraShiftNdc?: { x: number; y: number };
+}
+
+/** Exposition étalée dans le temps : chaque sous-rendu voit la caméra, la map et le zoom à son propre instant. */
+export interface Motion {
+  plan: ExposurePlan;
+  /** Place la caméra à l'instant t + u (s) et renvoie l'objectif à cet instant. */
+  apply(u: number): LensSample;
+  /** Remet la caméra dans l'état d'avant le flou de mouvement. */
+  restore(): void;
+}
 
 export interface LensParams {
   /** Champ vertical, degrés. */
@@ -41,6 +60,7 @@ var prevTexSampler: sampler;
 uniform uSample: vec2f;   // décalage normalisé u dans le disque unité (avant squeeze)
 uniform uShape: vec4f;    // lames, arrondi, rotation (rad), cat-eye
 uniform uField: vec4f;    // swirl (rad), rapport du cadre, 1 = premier échantillon (ignore prevTex), 1 = tilt actif
+uniform uRS: vec4f;       // rolling shutter : instant du sous-rendu u (s), lecture ρ (s), fenêtre w (s), 1 = actif
 uniform uWarp: vec4f;     // tilt : m00, m01, m10, m11 de I − o·τᵀ (voir optics/tilt.ts)
 uniform uProj: vec4f;     // tilt : P00, P11, shift NDC x, y
 varying uv0: vec2f;
@@ -83,7 +103,12 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
   let aspect = uniform.uField.y;
   // uv0.y croît vers le BAS de l'image (ligne 0 = haut) alors que u.y est « haut caméra » : on inverse y.
   let f = (input.uv0 * 2.0 - 1.0) * vec2f(aspect, -1.0) / sqrt(aspect * aspect + 1.0);
-  let w = apertureWeight(uniform.uSample, f);
+  var w = apertureWeight(uniform.uSample, f);
+  if (uniform.uRS.w > 0.5) {
+    // Rolling shutter : la ligne uv0.y (0 = haut) est exposée sur [ρ·y, ρ·y + w] ; miroir de rowAccepts (optics/camera-defects.ts).
+    let rowStart = uniform.uRS.y * input.uv0.y;
+    if (uniform.uRS.x < rowStart || uniform.uRS.x >= rowStart + uniform.uRS.z) { w = 0.0; }
+  }
   let prev = select(textureLoad(prevTex, p, 0), vec4f(0.0), uniform.uField.z > 0.5);
   var rgb = textureLoad(sceneTex, p, 0).rgb;
   if (uniform.uField.w > 0.5) {
@@ -135,6 +160,8 @@ export class DofRenderer {
   /** Échantillons ajoutés par image pendant le raffinement. */
   stepSamples = 4;
   exposure = 1;
+  /** Flou de mouvement / rolling shutter / gate weave ; null = image instantanée. */
+  motion: Motion | null = null;
 
   private readonly device: pc.GraphicsDevice;
   private readonly accumShader: pc.Shader;
@@ -157,6 +184,10 @@ export class DofRenderer {
   private readonly screenRect = new pc.Vec4();
   private inSubRender = false;
   private presentNow = false;
+  /** Instant du sous-rendu courant et plan d'exposition (lus par l'accumulation). */
+  private rs = { u: 0, readout: 0, window: 0, on: false };
+  /** Fraction des sous-rendus acceptée par ligne (rolling shutter) : normalise l'exposition. */
+  private rsAcceptance = 1;
 
   constructor(private readonly app: pc.AppBase, private readonly camera: pc.Entity) {
     this.device = app.graphicsDevice;
@@ -249,22 +280,36 @@ export class DofRenderer {
     if (budget <= 0) return; // image terminée : l'écran garde la dernière image présentée
 
     const cam = this.camera, cc = cam.camera!;
-    const base = cam.getPosition().clone();
-    const right = cam.right.clone(), up = cam.up.clone();
+    const basePos = cam.getPosition().clone();
+    const baseRight = cam.right.clone(), baseUp = cam.up.clone();
     const mpu = lens.metersPerUnit;
-    const focusU = lens.focusM / mpu;
-    // Rayon d'ouverture en unités de scène, mis à l'échelle pour la CoC exacte (voir apertureScale).
-    const focusMm = lens.focusM * 1000;
-    const radiusU = (apertureDiameter(lens.focalMm, lens.fNumber) / 2) * (focusMm > lens.focalMm ? apertureScale(lens.focalMm, focusMm) : 1) / 1000 / mpu;
-
-    // Éléments diagonaux de la projection (setPerspective, fov vertical) : P11 = 1/tan(fov/2), P00 = P11/aspect.
-    const p11 = 1 / Math.tan((lens.fovV * Math.PI) / 360), p00 = p11 / lens.aspect;
-    // Tilt : gradient τ du plan de netteté, en 1 / unité de scène (la focale est convertie en unités de scène).
-    const tilted = isTilted(lens.tiltDeg);
-    const tau = tiltGradient(lens.tiltDeg, lens.focalMm / 1000 / mpu);
+    const motion = this.motion;
+    this.rsAcceptance = motion?.plan.acceptance ?? 1;
 
     this.inSubRender = true;
     for (let i = 0; i < budget; i++) {
+      // Instant du sous-rendu (flou de mouvement) : caméra, map et zoom à cet instant.
+      let base = basePos, right = baseRight, up = baseUp;
+      let focalMm = lens.focalMm, focusM = lens.focusM, fovV = lens.fovV, shX = lens.shiftNdc.x, shY = lens.shiftNdc.y;
+      const u = motion ? sampleTime(this.count, motion.plan) : 0;
+      if (motion) {
+        const s = motion.apply(u);
+        focalMm = s.focalMm; focusM = s.focusM; fovV = s.fovV;
+        shX += s.extraShiftNdc?.x ?? 0; shY += s.extraShiftNdc?.y ?? 0;
+        base = cam.getPosition().clone(); right = cam.right.clone(); up = cam.up.clone();
+      }
+      this.rs = { u, readout: motion?.plan.readout ?? 0, window: motion?.plan.window ?? 0, on: (motion?.plan.readout ?? 0) > 0 };
+
+      const focusU = focusM / mpu;
+      // Rayon d'ouverture en unités de scène, mis à l'échelle pour la CoC exacte (voir apertureScale).
+      const focusMm = focusM * 1000;
+      const radiusU = (apertureDiameter(focalMm, lens.fNumber) / 2) * (focusMm > focalMm ? apertureScale(focalMm, focusMm) : 1) / 1000 / mpu;
+      // Éléments diagonaux de la projection (setPerspective, fov vertical) : P11 = 1/tan(fov/2), P00 = P11/aspect.
+      const p11 = 1 / Math.tan((fovV * Math.PI) / 360), p00 = p11 / lens.aspect;
+      // Tilt : gradient τ du plan de netteté, en 1 / unité de scène (la focale est convertie en unités de scène).
+      const tilted = isTilted(lens.tiltDeg);
+      const tau = tiltGradient(lens.tiltDeg, focalMm / 1000 / mpu);
+
       // Échantillon d'ouverture : décalage de caméra (squeeze appliqué) et décalage normalisé pour le masque.
       this.cur_u = this.sampler.sample(this.count);
       const [dx, dy] = this.sampler.offset(this.count);
@@ -272,21 +317,19 @@ export class DofRenderer {
       cam.setPosition(base.clone().add(right.clone().mulScalar(ox)).add(up.clone().mulScalar(oy)));
       // Cisaillement : PlayCanvas écrit projectionOffset dans P02 / P12 de la matrice de projection
       // (ndc = p·x/(−z) − P02). Le shift de l'objectif s'ajoute : cadre déplacé sans bouger le plan de netteté.
-      cc.projectionOffset = new pc.Vec2(
-        shearTerm(ox, p00, focusU) + lens.shiftNdc.x,
-        shearTerm(oy, p11, focusU) + lens.shiftNdc.y,
-      );
+      cc.projectionOffset = new pc.Vec2(shearTerm(ox, p00, focusU) + shX, shearTerm(oy, p11, focusU) + shY);
       this.warp = {
         on: tilted,
         m: tilted ? tiltWarp([ox, oy], tau) : [1, 0, 0, 1],
-        proj: [p00, p11, lens.shiftNdc.x, lens.shiftNdc.y],
+        proj: [p00, p11, shX, shY],
       };
       this.presentNow = i === budget - 1;
       this.app.render();
     }
+    motion?.restore();
     this.inSubRender = false;
     cc.projectionOffset = new pc.Vec2(0, 0);
-    cam.setPosition(base);
+    cam.setPosition(basePos);
   }
 
   /** Dans le rendu de l'image : accumule le sous-rendu, puis affiche si c'est le dernier. */
@@ -300,6 +343,7 @@ export class DofRenderer {
     scope.resolve('uSample').setValue(this.cur_u);
     scope.resolve('uShape').setValue([ap.blades, ap.roundness, (ap.rotationDeg * Math.PI) / 180, ap.catEye]);
     scope.resolve('uField').setValue([(ap.swirlDeg * Math.PI) / 180, this.lens!.aspect, this.count === 0 ? 1 : 0, this.warp.on ? 1 : 0]);
+    scope.resolve('uRS').setValue([this.rs.u, this.rs.readout, this.rs.window, this.rs.on ? 1 : 0]);
     scope.resolve('uWarp').setValue(this.warp.m);
     scope.resolve('uProj').setValue(this.warp.proj);
     pc.drawQuadWithShader(this.device, next.rt, this.accumShader);
@@ -307,7 +351,7 @@ export class DofRenderer {
     this.count++;
     if (this.presentNow) {
       scope.resolve('accumTex').setValue(this.accum[this.cur].tex);
-      scope.resolve('exposure').setValue(this.exposure / (this.count * this.centerAcceptance));
+      scope.resolve('exposure').setValue(this.exposure / (this.count * this.centerAcceptance * this.rsAcceptance));
       pc.drawQuadWithShader(this.device, null, this.presentShader, this.screenRect);
     }
   }
